@@ -73,10 +73,18 @@ void RenderWidget() {
 
         // --- 2. 屏幕使用时间统计 (读取 Tai 数据) ---
         y += S(10);
+
+        int totalSec = GetTotalScreenTime();
+        std::wstring totalStr;
+        if (totalSec < 60) totalStr = L"<1 \u5206\u949f"; // < 1 分钟
+        else if (totalSec < 3600) totalStr = std::to_wstring(totalSec / 60) + L" \u5206\u949f";
+        else totalStr = std::to_wstring(totalSec / 3600) + L" \u5c0f\u65f6 " + std::to_wstring((totalSec % 3600) / 60) + L" \u5206";
+
         g.DrawString(L"\u4eca\u65e5\u5c4f\u5e55\u65f6\u95f4", -1, &headF, PointF((REAL) S(15), y), &gBrush); // "今日屏幕时间"
+        g.DrawString(totalStr.c_str(), -1, &headF, PointF((REAL) (width - S(100)), y), &wBrush); // 显示总时长
         y += S(20);
 
-        auto topApps = GetTopApps(3); // 显示前三的应用
+        auto topApps = GetTopApps(g_TopAppsCount); // 显示前 N 个应用
         if (topApps.empty()) {
             g.DrawString(L"\u6682\u65e0\u6570\u636e", -1, &contentF, PointF((REAL) S(15), y), &gBrush); // "暂无数据"
             y += S(20);
@@ -148,7 +156,7 @@ void ResizeWidget() {
 
     // 屏幕时间高度计算 (标题 + 内容)
     h += S(10) + S(20);
-    int appsCount = std::min(3, (int)g_AppUsage.size());
+    int appsCount = std::min(g_TopAppsCount, (int)g_AppUsage.size());
     h += (appsCount == 0 ? 1 : appsCount) * S(20);
 
     // 待办高度
@@ -362,6 +370,13 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             AppendMenuW(hMenu, MF_POPUP, (UINT_PTR) hSub, L"\u80cc\u666f\u900f\u660e\u5ea6");
 
             AppendMenuW(hMenu, 0, 1005, L"\u8bbe\u7f6e Tai \u6570\u636e\u5e93\u8def\u5f84"); // 设置 Tai 数据库路径
+
+            HMENU hTopNSub = CreatePopupMenu();
+            AppendMenuW(hTopNSub, MF_STRING | (g_TopAppsCount == 3 ? MF_CHECKED : 0), 3003, L"3 \u4e2a");
+            AppendMenuW(hTopNSub, MF_STRING | (g_TopAppsCount == 5 ? MF_CHECKED : 0), 3005, L"5 \u4e2a");
+            AppendMenuW(hTopNSub, MF_STRING | (g_TopAppsCount == 10 ? MF_CHECKED : 0), 3010, L"10 \u4e2a");
+            AppendMenuW(hMenu, MF_POPUP, (UINT_PTR) hTopNSub, L"\u663e\u793a\u5e94\u7528\u6570\u91cf");
+
             AppendMenuW(hMenu, 0, 1002, L"\u7acb\u5373\u5237\u65b0");
             AppendMenuW(hMenu, 0, 1004, L"\u9000\u51fa\u7a0b\u5e8f");
 
@@ -377,6 +392,17 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else if (cmd >= 2001 && cmd <= 2005) {
                 if (cmd == 2001) g_BgAlpha = 50; else if (cmd == 2002) g_BgAlpha = 100; else if (cmd == 2003) g_BgAlpha = 150; else if (cmd == 2004) g_BgAlpha = 200; else g_BgAlpha = 255;
                 SaveAlphaSetting(); RenderWidget();
+            } else if (cmd >= 3003 && cmd <= 3010) {
+                if (cmd == 3003) g_TopAppsCount = 3;
+                else if (cmd == 3005) g_TopAppsCount = 5;
+                else if (cmd == 3010) g_TopAppsCount = 10;
+
+                WCHAR path[MAX_PATH];
+                GetModuleFileNameW(NULL, path, MAX_PATH);
+                PathRemoveFileSpecW(path);
+                PathAppendW(path, SETTINGS_FILE.c_str());
+                WritePrivateProfileStringW(L"Settings", L"TopAppsCount", std::to_wstring(g_TopAppsCount).c_str(), path);
+                ResizeWidget();
             } else if (cmd == 1005) {
                 OPENFILENAMEW ofn;
                 WCHAR szFile[MAX_PATH] = {0};

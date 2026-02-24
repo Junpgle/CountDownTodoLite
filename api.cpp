@@ -1,6 +1,3 @@
-//
-// Created by LENOVO on 2026/2/24.
-//
 #include "api.h"
 #include "utils.h"
 
@@ -103,6 +100,48 @@ void ApiDeleteCountdown(int id) {
     json j;
     j["id"] = id;
     SendRequest(L"/api/countdowns", "DELETE", j.dump());
+}
+
+std::map<std::wstring, int> ApiSyncScreenTime(const std::map<std::wstring, int>& localData, const std::wstring& dateStr, const std::wstring& deviceName) {
+    if (g_UserId == 0) return localData;
+
+    // 1. 上报本地设备今天的数据
+    json payload;
+    payload["user_id"] = g_UserId;
+    payload["device_name"] = ToUtf8(deviceName);
+    payload["record_date"] = ToUtf8(dateStr);
+
+    json apps = json::array();
+    for (const auto& pair : localData) {
+        json app;
+        app["app_name"] = ToUtf8(pair.first);
+        app["duration"] = pair.second;
+        apps.push_back(app);
+    }
+    payload["apps"] = apps;
+
+    SendRequest(L"/api/screen_time", "POST", payload.dump());
+
+    // 2. 拉取服务器端按应用聚合后的总数据 (包含所有设备)
+    // 修正点：getUrl 应该使用 std::wstring 构建，且不再对 dateStr 进行 ToUtf8 转换以避免类型冲突
+    std::wstring getUrl = L"/api/screen_time?user_id=" + std::to_wstring(g_UserId) + L"&date=" + dateStr;
+    std::string resGet = SendRequest(getUrl, "GET", "");
+
+    std::map<std::wstring, int> aggregatedData = localData;
+    if (!resGet.empty() && resGet.find("ERROR") != 0) {
+        try {
+            auto j = json::parse(resGet);
+            if (j.is_array()) {
+                aggregatedData.clear();
+                for (const auto& item : j) {
+                    std::wstring appName = ToWide(item["app_name"]);
+                    int duration = item["duration"];
+                    aggregatedData[appName] = duration;
+                }
+            }
+        } catch (...) {}
+    }
+    return aggregatedData;
 }
 
 void SyncData() {

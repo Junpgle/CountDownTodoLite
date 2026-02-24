@@ -124,6 +124,17 @@ void LoadSettings() {
     WCHAR taiPath[MAX_PATH] = { 0 };
     GetPrivateProfileStringW(L"Settings", L"TaiDbPath", L"", taiPath, MAX_PATH, path);
     g_TaiDbPath = taiPath;
+
+    g_TopAppsCount = GetPrivateProfileIntW(L"Settings", L"TopAppsCount", 3, path);
+
+    // 获取本机计算机名称作为设备名
+    WCHAR compName[MAX_COMPUTERNAME_LENGTH + 1];
+    DWORD compNameLen = sizeof(compName) / sizeof(WCHAR);
+    if (GetComputerNameW(compName, &compNameLen)) {
+        g_DeviceName = compName;
+    } else {
+        g_DeviceName = L"UnknownDevice";
+    }
 }
 
 void SaveSettings(int uid, const std::wstring &name, const std::wstring &email, const std::wstring &pass, bool savePass) {
@@ -144,6 +155,7 @@ void SaveAlphaSetting() {
     PathRemoveFileSpecW(path);
     PathAppendW(path, SETTINGS_FILE.c_str());
     WritePrivateProfileStringW(L"Settings", L"BgAlpha", std::to_wstring(g_BgAlpha).c_str(), path);
+    WritePrivateProfileStringW(L"Settings", L"TopAppsCount", std::to_wstring(g_TopAppsCount).c_str(), path);
 }
 
 void SaveTaiDbPathSetting() {

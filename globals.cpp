@@ -16,11 +16,15 @@ HWND g_hWidgetWnd = NULL;
 std::recursive_mutex g_DataMutex;
 float g_Scale = 1.0f;
 BYTE g_BgAlpha = 100;
+int g_TopAppsCount = 3;
 
 HWND g_hEmail = NULL;
 HWND g_hPass = NULL;
 HWND g_hAutoLogin = NULL;
 bool g_LoginSuccess = false;
+
+// 本机设备名称
+std::wstring g_DeviceName;
 
 std::vector<Todo> g_Todos;
 std::vector<Countdown> g_Countdowns;

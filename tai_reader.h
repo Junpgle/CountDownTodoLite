@@ -7,3 +7,9 @@ void StopTaiReader();
 
 // 获取格式化后的前 N 个应用程序使用时间数据
 std::vector<std::pair<std::wstring, int>> GetTopApps(int topN);
+
+// 获取今日屏幕总使用时长（秒）
+int GetTotalScreenTime();
+
+// 预留接口：从服务器同步其他设备的屏幕使用时间
+void SyncRemoteScreenTime();

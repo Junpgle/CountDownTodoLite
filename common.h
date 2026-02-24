@@ -76,11 +76,15 @@ extern HWND g_hWidgetWnd;
 extern std::recursive_mutex g_DataMutex;
 extern float g_Scale;
 extern BYTE g_BgAlpha;
+extern int g_TopAppsCount;
 
 extern HWND g_hEmail;
 extern HWND g_hPass;
 extern HWND g_hAutoLogin;
 extern bool g_LoginSuccess;
+
+// 本机设备名称
+extern std::wstring g_DeviceName;
 
 extern std::vector<Todo> g_Todos;
 extern std::vector<Countdown> g_Countdowns;
