@@ -50,7 +50,7 @@ void CheckForUpdates() {
     // 放入后台线程，绝对不阻塞主程序的启动速度
     std::thread([]() {
         std::wstring host = L"raw.githubusercontent.com";
-        std::wstring path = L"/Junpgle/MathQuizLite/refs/heads/master/update_manifest.json?token=GHSAT0AAAAAADOGIPAKUTFPZLF3JUBJKQOQ2NAMKOQ";
+        std::wstring path = L"/Junpgle/CountDownTodoLite/refs/heads/master/update_manifest.json?token=GHSAT0AAAAAADOGIPAKUTFPZLF3JUBJKQOQ2NAMKOQ";
 
         std::string res = SendUpdateCheckRequest(host, path);
         if (!res.empty()) {
