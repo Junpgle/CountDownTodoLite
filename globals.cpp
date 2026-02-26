@@ -1,11 +1,9 @@
 #include "common.h"
 
-// --- 常量定义 ---
 const std::wstring API_HOST = L"mathquiz.junpgle.me";
 const std::wstring SETTINGS_FILE = L"math_quiz_lite.ini";
 const wchar_t *APP_NAME = L"MathQuizLite";
 
-// --- 全局变量 ---
 HINSTANCE g_hInst = NULL;
 int g_UserId = 0;
 std::wstring g_Username;
@@ -23,17 +21,16 @@ HWND g_hPass = NULL;
 HWND g_hAutoLogin = NULL;
 bool g_LoginSuccess = false;
 
-// 本机设备名称
 std::wstring g_DeviceName;
+std::wstring g_TaiDbPath;
 
 std::vector<Todo> g_Todos;
 std::vector<Countdown> g_Countdowns;
 std::vector<HitZone> g_HitZones;
 
-// 屏幕使用时间记录
-std::map<std::wstring, int> g_AppUsage;
+// 修正为 vector 类型
+std::vector<AppUsageRecord> g_AppUsage;
 
-// 输入状态
 namespace InputState {
     std::wstring result1;
     std::wstring result2;

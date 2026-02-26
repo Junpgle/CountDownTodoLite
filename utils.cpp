@@ -1,15 +1,11 @@
 #include "utils.h"
 
-int S(int val) {
-    return (int) (val * g_Scale);
-}
-
-std::string ToUtf8(const std::wstring &wstr) {
-    if (wstr.empty()) return std::string();
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int) wstr.size(), NULL, 0, NULL, NULL);
-    std::string strTo(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int) wstr.size(), &strTo[0], size_needed, NULL, NULL);
-    return strTo;
+std::string ToUtf8(const std::wstring &w) {
+    if (w.empty()) return "";
+    int size = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, NULL, 0, NULL, NULL);
+    std::string s(size - 1, 0);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], size, NULL, NULL);
+    return s;
 }
 
 std::wstring ToWide(const std::string &str) {

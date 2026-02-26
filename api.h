@@ -1,16 +1,25 @@
 #pragma once
 #include "common.h"
 
+// 发送网络请求
 std::string SendRequest(const std::wstring &path, const std::string &method, const std::string &body);
 
-void ApiToggleTodo(int id, bool currentStatus);
+// 登录接口
+std::string ApiLogin(const std::wstring &email, const std::wstring &password);
+// 自动登录尝试
+bool AttemptAutoLogin();
+
+// 待办操作
 void ApiAddTodo(const std::wstring &content);
+void ApiToggleTodo(int id, bool done);
 void ApiDeleteTodo(int id);
+
+// 倒计时操作
 void ApiAddCountdown(const std::wstring &title, const std::wstring &dateStr);
 void ApiDeleteCountdown(int id);
 
-// 同步屏幕使用时间并返回聚合后的今日各应用总时间
+// 同步屏幕时间
 std::map<std::wstring, int> ApiSyncScreenTime(const std::map<std::wstring, int>& localData, const std::wstring& dateStr, const std::wstring& deviceName);
 
+// 全局同步任务
 void SyncData();
-bool AttemptAutoLogin();
