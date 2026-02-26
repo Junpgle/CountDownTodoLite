@@ -14,18 +14,19 @@ using json = nlohmann::json;
 #pragma comment(lib, "winhttp.lib")
 
 // --- 自动更新模块 ---
-// 当前内部版本号。发布正式版时请修改此值与服务器 JSON 同步
-// 测试时保持为 0，云端 version_code 为 1 即可触发弹窗
-const int CURRENT_VERSION_CODE = 0;
+// 当前内部版本号（每次发布新版本时递增，必须与服务器端 manifest 中的 version_code 对应）
+const int CURRENT_VERSION_CODE = 1;
 
 /**
  * 检查版本更新
- * 采用异步线程避免阻塞 UI 启动
+ * @param isManual 是否为用户手动触发。手动触发时，若无更新或失败会弹出提示。
  */
-void CheckForUpdates() {
-    std::thread([]() {
+void CheckForUpdates(bool isManual = false) {
+    std::thread([isManual]() {
         // 1. 初始化 COM 环境，确保 ShellExecute 等组件在子线程可用
         HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
+        bool checkProcessed = false; // 标记是否成功完成逻辑判定
 
         try {
             // 更新为用户提供的最新公开链接 (不带 token，永久有效)
@@ -67,6 +68,10 @@ void CheckForUpdates() {
                                     char buf[64];
                                     sprintf_s(buf, "Update Check: Server returned HTTP %d\n", dwStatusCode);
                                     OutputDebugStringA(buf);
+                                    if (isManual) {
+                                        MessageBoxW(NULL, L"无法连接到更新服务器，请检查网络设置。", L"检查更新", MB_OK | MB_ICONERROR | MB_TOPMOST);
+                                        checkProcessed = true;
+                                    }
                                 }
                             }
                         }
@@ -90,6 +95,7 @@ void CheckForUpdates() {
                     OutputDebugStringA(debugBuf);
 
                     if (remoteVersionCode > CURRENT_VERSION_CODE) {
+                        checkProcessed = true;
                         bool forceUpdate = false;
                         if (j.contains("force_update") && j["force_update"].is_boolean()) {
                             forceUpdate = j["force_update"].get<bool>();
@@ -113,30 +119,37 @@ void CheckForUpdates() {
                         }
 
                         std::wstring msg = desc + L"\n\n是否立即前往下载更新？";
-                        // MB_TOPMOST 确保在小组件上方弹出
                         UINT mbFlags = MB_ICONINFORMATION | MB_TOPMOST;
                         mbFlags |= forceUpdate ? MB_OK : MB_YESNO;
 
-                        // 弹出窗口
                         int btn = MessageBoxW(NULL, msg.c_str(), title.c_str(), mbFlags);
                         if (btn == IDYES || btn == IDOK) {
                             if (!url.empty()) {
                                 ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
                             }
                             if (forceUpdate) {
-                                // 强制更新：关闭窗口并退出
                                 if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_CLOSE, 0, 0);
                             }
                         }
+                    } else {
+                        // 版本已是最新
+                        if (isManual && !checkProcessed) {
+                            MessageBoxW(NULL, L"当前已是最新版本，无需更新。", L"检查更新", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                            checkProcessed = true;
+                        }
                     }
                 }
+            } else if (isManual && !checkProcessed) {
+                MessageBoxW(NULL, L"获取更新信息失败，请稍后再试。", L"检查更新", MB_OK | MB_ICONWARNING | MB_TOPMOST);
             }
         } catch (const std::exception& e) {
             OutputDebugStringA("Update check exception: ");
             OutputDebugStringA(e.what());
             OutputDebugStringA("\n");
+            if (isManual) MessageBoxW(NULL, L"解析更新配置时出错。", L"检查更新", MB_OK | MB_ICONERROR | MB_TOPMOST);
         } catch (...) {
             OutputDebugStringA("Unknown exception in update thread.\n");
+            if (isManual) MessageBoxW(NULL, L"检查更新时发生未知错误。", L"检查更新", MB_OK | MB_ICONERROR | MB_TOPMOST);
         }
 
         if (SUCCEEDED(hr)) {
@@ -196,9 +209,8 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
         UpdateWindow(g_hWidgetWnd);
         ResizeWidget();
 
-        // --- 执行异步更新检查 ---
-        // 放在这里启动，确保主窗口 UI 环境已经准备就绪
-        CheckForUpdates();
+        // --- 执行异步更新检查 (默认自动静默检查) ---
+        CheckForUpdates(false);
     }
 
     // 主消息循环

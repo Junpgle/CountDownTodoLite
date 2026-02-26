@@ -4,6 +4,9 @@
 
 using namespace Gdiplus;
 
+// 外部声明，引用在 main.cpp 中定义的更新检查函数
+extern void CheckForUpdates(bool isManual = false);
+
 // 前瞻声明，确保 ShowLogin 可以找到定义
 LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT CALLBACK InputWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -236,7 +239,7 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                         std::wstring t, d;
                         if (ShowInputDialog(hWnd, 1, t, d)) { ApiAddCountdown(t, d); SyncData(); }
                     }
-                    else if (z.type == 3) { // 切换待办状态 (已修复：支持取消勾选)
+                    else if (z.type == 3) { // 切换待办状态
                         bool currentStatus = false;
                         {
                             std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
@@ -262,16 +265,40 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!hit) SendMessage(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
         } break;
         case WM_RBUTTONUP: {
-            POINT pt; GetCursorPos(&pt); HMENU hMenu = CreatePopupMenu(); HMENU hTopSub = CreatePopupMenu();
+            POINT pt; GetCursorPos(&pt);
+            HMENU hMenu = CreatePopupMenu();
+            HMENU hTopSub = CreatePopupMenu();
+
+            // 子菜单：统计排名设置
             AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 3 ? MF_CHECKED : 0), 3003, L"显示前 3 个");
             AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 5 ? MF_CHECKED : 0), 3005, L"显示前 5 个");
             AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 10 ? MF_CHECKED : 0), 3010, L"显示前 10 个");
             AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hTopSub, L"应用统计排名");
-            AppendMenuW(hMenu, 0, 1001, L"立即同步"); AppendMenuW(hMenu, 0, 1003, L"退出程序");
+
+            AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(hMenu, 0, 1001, L"立即同步");
+            AppendMenuW(hMenu, 0, 1002, L"检查更新"); // 新增选项
+            AppendMenuW(hMenu, 0, 1003, L"退出程序");
+
             int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD, pt.x, pt.y, 0, hWnd, NULL);
-            if (cmd >= 3003 && cmd <= 3010) { g_TopAppsCount = (cmd == 3003) ? 3 : (cmd == 3005 ? 5 : 10); ResizeWidget(); }
-            else if (cmd == 1001) SyncData(); else if (cmd == 1003) PostQuitMessage(0);
-            DestroyMenu(hTopSub); DestroyMenu(hMenu);
+
+            if (cmd >= 3003 && cmd <= 3010) {
+                g_TopAppsCount = (cmd == 3003) ? 3 : (cmd == 3005 ? 5 : 10);
+                ResizeWidget();
+            }
+            else if (cmd == 1001) {
+                SyncData();
+            }
+            else if (cmd == 1002) {
+                // 调用在 main.cpp 中定义的函数，传入 true 表示手动检查
+                CheckForUpdates(true);
+            }
+            else if (cmd == 1003) {
+                PostQuitMessage(0);
+            }
+
+            DestroyMenu(hTopSub);
+            DestroyMenu(hMenu);
         } break;
         case WM_USER_REFRESH: case WM_USER_TICK: ResizeWidget(); break;
         case WM_DESTROY: PostQuitMessage(0); break;
