@@ -177,6 +177,15 @@ void SyncData() {
             auto j = json::parse(resTodos);
             std::vector<Todo> temp;
             for (auto &it : j) {
+                // 修复点：过滤掉被标记为软删除的待办事项
+                bool isDeleted = false;
+                if (it.contains("is_deleted")) {
+                    auto val = it["is_deleted"];
+                    if (val.is_number()) isDeleted = (val.get<int>() == 1);
+                    else if (val.is_boolean()) isDeleted = val.get<bool>();
+                }
+                if (isDeleted) continue;
+
                 temp.push_back({
                     it["id"].get<int>(),
                     ToWide(it["content"].get<std::string>()),
@@ -196,6 +205,15 @@ void SyncData() {
             auto j = json::parse(resCounts);
             std::vector<Countdown> temp;
             for (auto &it : j) {
+                // 修复点：过滤掉被标记为软删除的倒计时事项
+                bool isDeleted = false;
+                if (it.contains("is_deleted")) {
+                    auto val = it["is_deleted"];
+                    if (val.is_number()) isDeleted = (val.get<int>() == 1);
+                    else if (val.is_boolean()) isDeleted = val.get<bool>();
+                }
+                if (isDeleted) continue;
+
                 std::wstring ds = ToWide(it["target_time"].get<std::string>());
                 temp.push_back({
                     it["id"].get<int>(),
