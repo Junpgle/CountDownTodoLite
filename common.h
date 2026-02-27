@@ -39,6 +39,8 @@ struct Todo {
     std::wstring content;
     bool isDone;
     time_t lastUpdated;
+    std::wstring createdDate; // 新增字段
+    std::wstring dueDate;     // 新增字段
 };
 
 struct Countdown {
@@ -64,8 +66,8 @@ struct HitZone {
 namespace InputState {
     extern std::wstring result1;
     extern std::wstring result2;
+    extern std::wstring result3; // 新增字段：用于日期
     extern bool isOk;
-    extern int currentType;
 }
 
 extern HINSTANCE g_hInst;
@@ -80,20 +82,15 @@ extern float g_Scale;
 extern BYTE g_BgAlpha;
 extern int g_TopAppsCount;
 
-extern HWND g_hEmail;
-extern HWND g_hPass;
-extern HWND g_hAutoLogin;
+// 修复：声明缺失的全局变量
 extern bool g_LoginSuccess;
+extern std::wstring g_TaiDbPath;
 
 extern std::wstring g_DeviceName;
-extern std::wstring g_TaiDbPath;
 
 extern std::vector<Todo> g_Todos;
 extern std::vector<Countdown> g_Countdowns;
 extern std::vector<HitZone> g_HitZones;
-
-// 统一为 vector 结构
 extern std::vector<AppUsageRecord> g_AppUsage;
 
-// 宏定义：处理 DPI 缩放
 #define S(x) (int)((x) * g_Scale)

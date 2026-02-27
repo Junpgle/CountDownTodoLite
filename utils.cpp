@@ -165,3 +165,13 @@ void SaveTaiDbPathSetting() {
 HFONT GetMiSansFont(int s) {
     return CreateFontW(S(s), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"MiSans");
 }
+
+// 新增获取今日日期的工具函数
+std::wstring GetTodayDate() {
+    time_t now = time(nullptr);
+    struct tm t;
+    localtime_s(&t, &now);
+    wchar_t buf[20];
+    swprintf_s(buf, L"%04d-%02d-%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+    return buf;
+}

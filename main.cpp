@@ -209,6 +209,13 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
         UpdateWindow(g_hWidgetWnd);
         ResizeWidget();
 
+        // --- 修复：程序启动时立即进行一次云端数据同步 ---
+        std::thread([]() {
+            // 稍作延迟确保窗口句柄已经完全准备好接收刷新消息
+            Sleep(500);
+            SyncData();
+        }).detach();
+
         // --- 执行异步更新检查 (默认自动静默检查) ---
         CheckForUpdates(false);
     }

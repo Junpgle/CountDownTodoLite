@@ -16,24 +16,19 @@ float g_Scale = 1.0f;
 BYTE g_BgAlpha = 100;
 int g_TopAppsCount = 3;
 
-HWND g_hEmail = NULL;
-HWND g_hPass = NULL;
-HWND g_hAutoLogin = NULL;
+// 全局状态变量定义
 bool g_LoginSuccess = false;
-
-std::wstring g_DeviceName;
 std::wstring g_TaiDbPath;
+std::wstring g_DeviceName;
 
 std::vector<Todo> g_Todos;
 std::vector<Countdown> g_Countdowns;
 std::vector<HitZone> g_HitZones;
-
-// 修正为 vector 类型
 std::vector<AppUsageRecord> g_AppUsage;
 
 namespace InputState {
     std::wstring result1;
     std::wstring result2;
+    std::wstring result3; // 必须在此定义，以匹配 common.h 中的 extern 声明
     bool isOk = false;
-    int currentType = 0;
 }

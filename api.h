@@ -9,8 +9,8 @@ std::string ApiLogin(const std::wstring &email, const std::wstring &password);
 // 自动登录尝试
 bool AttemptAutoLogin();
 
-// 待办操作
-void ApiAddTodo(const std::wstring &content);
+// 待办操作 - 修复：添加更多参数以匹配最新 UI
+void ApiAddTodo(const std::wstring &content, const std::wstring &createdDate, const std::wstring &dueDate, bool isDone);
 void ApiToggleTodo(int id, bool done);
 void ApiDeleteTodo(int id);
 

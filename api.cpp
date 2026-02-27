@@ -83,10 +83,14 @@ bool AttemptAutoLogin() {
 }
 
 // 待办事项操作
-void ApiAddTodo(const std::wstring &content) {
+void ApiAddTodo(const std::wstring &content, const std::wstring &createdDate, const std::wstring &dueDate, bool isDone) {
     json j;
     j["user_id"] = g_UserId;
     j["content"] = ToUtf8(content);
+    j["created_date"] = ToUtf8(createdDate);
+    j["due_date"] = ToUtf8(dueDate);
+    j["is_completed"] = isDone;
+    j["client_updated_at"] = (long long)time(nullptr) * 1000;
     SendRequest(L"/api/todos", "POST", j.dump());
 }
 
@@ -177,20 +181,15 @@ void SyncData() {
             auto j = json::parse(resTodos);
             std::vector<Todo> temp;
             for (auto &it : j) {
-                // 修复点：过滤掉被标记为软删除的待办事项
-                bool isDeleted = false;
-                if (it.contains("is_deleted")) {
-                    auto val = it["is_deleted"];
-                    if (val.is_number()) isDeleted = (val.get<int>() == 1);
-                    else if (val.is_boolean()) isDeleted = val.get<bool>();
-                }
-                if (isDeleted) continue;
+                if (it.contains("is_deleted") && it["is_deleted"].get<int>() == 1) continue;
 
                 temp.push_back({
                     it["id"].get<int>(),
                     ToWide(it["content"].get<std::string>()),
                     it["is_completed"].get<int>() != 0,
-                    0
+                    0,
+                    it.contains("created_date") && !it["created_date"].is_null() ? ToWide(it["created_date"].get<std::string>()) : L"",
+                    it.contains("due_date") && !it["due_date"].is_null() ? ToWide(it["due_date"].get<std::string>()) : L""
                 });
             }
             std::lock_guard<std::recursive_mutex> l(g_DataMutex);
