@@ -125,7 +125,7 @@ void RenderWidget() {
         Font titleF(&ff, (REAL) S(16), FontStyleBold, UnitPixel);
         Font headF(&ff, (REAL) S(12), FontStyleRegular, UnitPixel);
         Font contentF(&ff, (REAL) S(14), FontStyleRegular, UnitPixel);
-        Font dateF(&ff, (REAL) S(11), FontStyleRegular, UnitPixel); // 稍微调大一点点
+        Font dateF(&ff, (REAL) S(11), FontStyleRegular, UnitPixel);
 
         SolidBrush wBrush(Color(255, 255, 255, 255));
         SolidBrush gBrush(Color(255, 180, 180, 180));
@@ -195,7 +195,9 @@ void RenderWidget() {
             g.DrawString(L"暂无待办", -1, &contentF, PointF((REAL) S(15), y), &gBrush);
         } else {
             for (const auto &it : g_Todos) {
-                g_HitZones.push_back({Rect(S(15), (int) y, width - S(30), S(35)), it.id, 3});
+                // 点击区域：分为主体(勾选/编辑)和右侧(删除)
+                g_HitZones.push_back({Rect(S(15), (int) y, width - S(65), S(35)), it.id, 3});
+                g_HitZones.push_back({Rect(width - S(45), (int) y, S(35), S(35)), it.id, 5}); // type 5 为删除待办
 
                 // 1. 复选框
                 g.DrawRectangle(&linePen, S(15), (int) y + S(6), S(12), S(12));
@@ -206,28 +208,29 @@ void RenderWidget() {
                 Font itemF(&ff, (REAL) S(14), style, UnitPixel);
                 g.DrawString(it.content.c_str(), -1, &itemF, PointF((REAL) S(32), y + S(3)), it.isDone ? &gBrush : &wBrush);
 
+                // 绘制删除按钮 [-]
+                g.DrawString(L"[-]", -1, &headF, PointF((REAL)(width - S(40)), y + S(5)), &rBrush);
+
                 if (!it.dueDate.empty()) {
-                    // 仅显示日期部分 YYYY-MM-DD
                     std::wstring shortDate = it.dueDate.substr(0, 10);
                     std::wstring dateLabel = L"截止: " + shortDate;
 
-                    // 计算文本大小以进行右对齐
                     RectF layoutRect(0, 0, (REAL)width, (REAL)S(20));
                     RectF boundRect;
                     g.MeasureString(dateLabel.c_str(), -1, &dateF, layoutRect, &boundRect);
 
-                    // 靠右对齐绘制
-                    float dateX = (float)width - boundRect.Width - S(15);
+                    // 靠右绘制，留出删除按钮位置
+                    float dateX = (float)width - boundRect.Width - S(50);
                     g.DrawString(dateLabel.c_str(), -1, &dateF, PointF(dateX, y + S(5)), &gBrush);
 
                     // 3. 进度条 (标题下方)
                     float progress = CalculateTodoProgress(it.createdDate, it.dueDate);
                     if (progress >= 0) {
                         SolidBrush barBg(Color(50, 255, 255, 255));
-                        g.FillRectangle(&barBg, S(32), (int)y + S(24), width - S(50), S(4));
+                        g.FillRectangle(&barBg, S(32), (int)y + S(24), width - S(90), S(4));
                         Color progressColor = (progress > 0.85f && !it.isDone) ? Color(255, 255, 100, 100) : Color(255, 80, 220, 80);
                         SolidBrush barFg(progressColor);
-                        g.FillRectangle(&barFg, S(32), (int)y + S(24), (int)((width - S(50)) * progress), S(4));
+                        g.FillRectangle(&barFg, S(32), (int)y + S(24), (int)((width - S(90)) * progress), S(4));
                     }
                 }
                 y += S(35);
@@ -269,7 +272,7 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                     else if (z.type == 2) { // 倒计时
                         std::wstring t, d, dummy; if (ShowInputDialog(hWnd, 1, t, d, dummy)) { ApiAddCountdown(t, d); SyncData(); }
                     }
-                    else if (z.type == 3) { // 待办
+                    else if (z.type == 3) { // 待办点击/编辑
                         if (x < S(30)) {
                             bool done = false; { std::lock_guard<std::recursive_mutex> l(g_DataMutex); for(auto &t:g_Todos) if(t.id==z.id) done=t.isDone; }
                             ApiToggleTodo(z.id, !done);
@@ -280,8 +283,11 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                         }
                         SyncData();
                     }
-                    else if (z.type == 4) { // 删除
+                    else if (z.type == 4) { // 删除倒计时
                         if (MessageBoxW(hWnd, L"确定要删除吗？", L"确认", MB_YESNO) == IDYES) { ApiDeleteCountdown(z.id); SyncData(); }
+                    }
+                    else if (z.type == 5) { // 删除待办
+                        if (MessageBoxW(hWnd, L"确定要删除这条待办吗？", L"确认删除", MB_YESNO | MB_ICONQUESTION) == IDYES) { ApiDeleteTodo(z.id); SyncData(); }
                     }
                     break;
                 }
@@ -313,7 +319,6 @@ LRESULT CALLBACK InputWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         WCHAR content[512]; GetDlgItemTextW(hWnd, 101, content, 512);
         InputState::result1 = content;
 
-        // 处理日期选择器
         SYSTEMTIME st1, st2;
         DateTime_GetSystemtime(GetDlgItem(hWnd, 102), &st1);
         DateTime_GetSystemtime(GetDlgItem(hWnd, 103), &st2);
@@ -339,11 +344,9 @@ bool ShowInputDialog(HWND parent, int type, std::wstring &o1, std::wstring &o2, 
 
     HFONT hF = GetMiSansFont(14);
 
-    // 内容
     CreateWindowW(L"STATIC", type == 0 ? L"内容:" : L"标题:", WS_CHILD | WS_VISIBLE, S(20), S(20), S(80), S(20), hDlg, NULL, NULL, NULL);
     CreateWindowW(L"EDIT", o1.c_str(), WS_CHILD | WS_VISIBLE | WS_BORDER, S(100), S(18), S(200), S(25), hDlg, (HMENU)101, NULL, NULL);
 
-    // 日期选择器控件 (SysDateTimePick32)
     CreateWindowW(L"STATIC", type == 0 ? L"开始日期:" : L"目标日期:", WS_CHILD | WS_VISIBLE, S(20), S(60), S(80), S(20), hDlg, NULL, NULL, NULL);
     HWND hPicker1 = CreateWindowExW(0, DATETIMEPICK_CLASS, L"", WS_BORDER | WS_CHILD | WS_VISIBLE | DTS_SHORTDATECENTURYFORMAT,
         S(100), S(58), S(200), S(25), hDlg, (HMENU)102, NULL, NULL);
@@ -357,12 +360,11 @@ bool ShowInputDialog(HWND parent, int type, std::wstring &o1, std::wstring &o2, 
         HWND hPicker2 = CreateWindowExW(0, DATETIMEPICK_CLASS, L"", WS_BORDER | WS_CHILD | WS_VISIBLE | DTS_SHORTDATECENTURYFORMAT,
             S(100), S(98), S(200), S(25), hDlg, (HMENU)103, NULL, NULL);
 
-        // 如果截止日期为空，默认为明天
         if (o3.empty()) {
             GetLocalTime(&stEnd);
             FILETIME ft; SystemTimeToFileTime(&stEnd, &ft);
             ULARGE_INTEGER uli; uli.LowPart = ft.dwLowDateTime; uli.HighPart = ft.dwHighDateTime;
-            uli.QuadPart += (ULONGLONG)24 * 60 * 60 * 1000 * 10000; // 加一天
+            uli.QuadPart += (ULONGLONG)24 * 60 * 60 * 1000 * 10000;
             ft.dwLowDateTime = uli.LowPart; ft.dwHighDateTime = uli.HighPart;
             FileTimeToSystemTime(&ft, &stEnd);
         } else {
