@@ -1,18 +1,21 @@
 #include "ui.h"
 #include "utils.h"
 #include "api.h"
-#include <commctrl.h> // 必须包含此头文件以使用日期选择器
+#include "stats_window.h" // 引入统计窗口头文件
+#include <commctrl.h>
 
 using namespace Gdiplus;
 
 // 外部声明
 extern void CheckForUpdates(bool isManual = false);
+// 显式前向声明以解决部分编译器的作用域识别问题
+extern void ShowStatsWindow(HWND parent);
 
 // 前瞻声明
 LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT CALLBACK InputWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
 
-// 内部辅助：字符串转 SYSTEMTIME (用于初始化选择器)
+// 内部辅助：字符串转 SYSTEMTIME
 void StringToSystemTime(const std::wstring& dateStr, SYSTEMTIME& st) {
     GetLocalTime(&st);
     int y, m, d;
@@ -33,7 +36,7 @@ int GetTotalScreenTimeInternal() {
     return total;
 }
 
-// 计算进度条百分比 (0.0 - 1.0)
+// 计算进度条百分比
 float CalculateTodoProgress(const std::wstring& start, const std::wstring& end) {
     if (start.empty() || end.empty()) return -1.0f;
     auto parse = [](const std::wstring& s) -> time_t {
@@ -161,7 +164,11 @@ void RenderWidget() {
         y += S(10);
         int totalSec = GetTotalScreenTimeInternal();
         std::wstring totalStr = (totalSec < 3600) ? (std::to_wstring(totalSec/60) + L" m") : (std::to_wstring(totalSec/3600) + L" h " + std::to_wstring((totalSec%3600)/60) + L" m");
+
+        // 增加“今日屏幕时间”点击入口 (Type 6)
         g.DrawString(L"今日屏幕时间", -1, &headF, PointF((REAL) S(15), y), &gBrush);
+        g_HitZones.push_back({Rect(S(15), (int) y, S(100), S(20)), 0, 6});
+
         g.DrawString(totalStr.c_str(), -1, &headF, PointF((REAL) (width - S(90)), y), &wBrush);
         y += S(20);
         std::vector<AppUsageRecord> displayList = g_AppUsage;
@@ -172,9 +179,15 @@ void RenderWidget() {
             y += S(20);
         } else {
             for (const auto& rec : displayList) {
-                int iconType = 0; std::wstring dn = rec.deviceName; for(auto &c : dn) c = towlower(c);
-                if (dn.find(L"phone") != std::wstring::npos || dn.find(L"iphone") != std::wstring::npos || dn.find(L"android") != std::wstring::npos) iconType = 1;
-                else if (dn.find(L"pad") != std::wstring::npos || dn.find(L"tablet") != std::wstring::npos) iconType = 2;
+                int iconType = 0;
+                std::wstring dn = rec.deviceName;
+                for(auto &c : dn) c = towlower(c);
+
+                // 优化映射逻辑：优先匹配平板关键词
+                if (dn.find(L"tablet") != std::wstring::npos || dn.find(L"pad") != std::wstring::npos) iconType = 2;
+                else if (dn.find(L"phone") != std::wstring::npos || dn.find(L"iphone") != std::wstring::npos || dn.find(L"android") != std::wstring::npos) iconType = 1;
+                else iconType = 0; // 默认 PC
+
                 DrawDeviceIcon(g, iconType, (REAL)S(15), y + S(2), (REAL)S(16), &wBrush);
                 std::wstring nameDisp = rec.appName; if (nameDisp.length() > 14) nameDisp = nameDisp.substr(0, 12) + L"...";
                 g.DrawString(nameDisp.c_str(), -1, &contentF, PointF((REAL) S(38), y), &wBrush);
@@ -197,7 +210,7 @@ void RenderWidget() {
             for (const auto &it : g_Todos) {
                 // 点击区域：分为主体(勾选/编辑)和右侧(删除)
                 g_HitZones.push_back({Rect(S(15), (int) y, width - S(65), S(35)), it.id, 3});
-                g_HitZones.push_back({Rect(width - S(45), (int) y, S(35), S(35)), it.id, 5}); // type 5 为删除待办
+                g_HitZones.push_back({Rect(width - S(45), (int) y, S(35), S(35)), it.id, 5});
 
                 // 1. 复选框
                 g.DrawRectangle(&linePen, S(15), (int) y + S(6), S(12), S(12));
@@ -208,7 +221,6 @@ void RenderWidget() {
                 Font itemF(&ff, (REAL) S(14), style, UnitPixel);
                 g.DrawString(it.content.c_str(), -1, &itemF, PointF((REAL) S(32), y + S(3)), it.isDone ? &gBrush : &wBrush);
 
-                // 绘制删除按钮 [-]
                 g.DrawString(L"[-]", -1, &headF, PointF((REAL)(width - S(40)), y + S(5)), &rBrush);
 
                 if (!it.dueDate.empty()) {
@@ -266,13 +278,13 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             for (const auto& z : zones) {
                 if (z.rect.Contains(x, y)) {
                     hit = true;
-                    if (z.type == 1) { // 添加
+                    if (z.type == 1) {
                         std::wstring c, d1, d2; if (ShowInputDialog(hWnd, 0, c, d1, d2)) { ApiAddTodo(c, d1, d2, false); SyncData(); }
                     }
-                    else if (z.type == 2) { // 倒计时
+                    else if (z.type == 2) {
                         std::wstring t, d, dummy; if (ShowInputDialog(hWnd, 1, t, d, dummy)) { ApiAddCountdown(t, d); SyncData(); }
                     }
-                    else if (z.type == 3) { // 待办点击/编辑
+                    else if (z.type == 3) {
                         if (x < S(30)) {
                             bool done = false; { std::lock_guard<std::recursive_mutex> l(g_DataMutex); for(auto &t:g_Todos) if(t.id==z.id) done=t.isDone; }
                             ApiToggleTodo(z.id, !done);
@@ -283,11 +295,14 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                         }
                         SyncData();
                     }
-                    else if (z.type == 4) { // 删除倒计时
+                    else if (z.type == 4) {
                         if (MessageBoxW(hWnd, L"确定要删除吗？", L"确认", MB_YESNO) == IDYES) { ApiDeleteCountdown(z.id); SyncData(); }
                     }
-                    else if (z.type == 5) { // 删除待办
+                    else if (z.type == 5) {
                         if (MessageBoxW(hWnd, L"确定要删除这条待办吗？", L"确认删除", MB_YESNO | MB_ICONQUESTION) == IDYES) { ApiDeleteTodo(z.id); SyncData(); }
+                    }
+                    else if (z.type == 6) { // 处理点击“今日屏幕时间”标题
+                        ShowStatsWindow(hWnd);
                     }
                     break;
                 }
@@ -301,10 +316,18 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 10 ? MF_CHECKED : 0), 3010, L"前 10");
             AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hTopSub, L"统计排名");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(hMenu, 0, 1001, L"立即同步"); AppendMenuW(hMenu, 0, 1002, L"检查更新"); AppendMenuW(hMenu, 0, 1003, L"退出");
+            AppendMenuW(hMenu, 0, 1001, L"立即同步");
+            AppendMenuW(hMenu, 0, 1004, L"屏幕时间统计报告"); // 增加右键菜单入口
+            AppendMenuW(hMenu, 0, 1002, L"检查更新");
+            AppendMenuW(hMenu, 0, 1003, L"退出");
+
             int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD, pt.x, pt.y, 0, hWnd, NULL);
             if (cmd >= 3003 && cmd <= 3010) { g_TopAppsCount = (cmd == 3003) ? 3 : (cmd == 3005 ? 5 : 10); ResizeWidget(); }
-            else if (cmd == 1001) SyncData(); else if (cmd == 1002) CheckForUpdates(true); else if (cmd == 1003) PostQuitMessage(0);
+            else if (cmd == 1001) SyncData();
+            else if (cmd == 1004) ShowStatsWindow(hWnd); // 处理右键点击报告
+            else if (cmd == 1002) CheckForUpdates(true);
+            else if (cmd == 1003) PostQuitMessage(0);
+
             DestroyMenu(hTopSub); DestroyMenu(hMenu);
         } break;
         case WM_USER_REFRESH: case WM_USER_TICK: ResizeWidget(); break;

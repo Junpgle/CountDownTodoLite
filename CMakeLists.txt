@@ -12,6 +12,8 @@ add_executable(MathQuizLite
         ui.cpp
         tai_reader.cpp
         sqlite3.c
+        stats_window.h
+        stats_window.cpp
 )
 
 # 强制指定为 Windows GUI 子系统，隐藏控制台窗口
