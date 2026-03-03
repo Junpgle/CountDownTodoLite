@@ -5,6 +5,9 @@
 #include <commctrl.h>
 #include <algorithm>
 #include <ctime>
+#include <shlwapi.h>
+
+#pragma comment(lib, "shlwapi.lib")
 
 using namespace Gdiplus;
 
@@ -19,6 +22,8 @@ const UINT_PTR SCROLL_TIMER_ID = 1001;
 // 前瞻声明
 LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
 LRESULT CALLBACK InputWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
+void SaveLoginConfig(const WCHAR* email, const WCHAR* password, bool savePass, bool autoLogin);
+bool ShowLogin(bool isManualLogout);
 
 // 内部辅助：字符串转 SYSTEMTIME
 void StringToSystemTime(const std::wstring& dateStr, SYSTEMTIME& st) {
@@ -414,12 +419,34 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             AppendMenuW(hMenu, 0, 1001, L"立即同步");
             AppendMenuW(hMenu, 0, 1004, L"屏幕时间统计报告");
             AppendMenuW(hMenu, 0, 1002, L"检查更新");
+            AppendMenuW(hMenu, 0, 1005, L"退出账号"); // 新增：退出账号按钮
             AppendMenuW(hMenu, 0, 1003, L"退出");
             int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD, pt.x, pt.y, 0, hWnd, NULL);
             if (cmd >= 3003 && cmd <= 3010) { g_TopAppsCount = (cmd == 3003) ? 3 : (cmd == 3005 ? 5 : 10); ResizeWidget(); }
             else if (cmd == 1001) SyncData();
             else if (cmd == 1004) ShowStatsWindow(hWnd);
             else if (cmd == 1002) CheckForUpdates(true);
+            else if (cmd == 1005) { // 退出账号逻辑
+                // 保留已保存的邮箱/密码及自动登录设置，不修改 INI
+                // ShowLogin(true) 会读到真实的勾选状态并显示，但因 isManualLogout=true 不会触发自动登录
+                g_UserId = 0;
+                g_Username = L"";
+                g_LoginSuccess = false;
+                {
+                    std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
+                    // 清空本地当前用户的数据，避免切账号时数据闪烁或残存
+                    g_Todos.clear();
+                    g_Countdowns.clear();
+                    g_AppUsage.clear();
+                }
+                ShowWindow(hWnd, SW_HIDE); // 隐藏主界面
+                if (ShowLogin(true)) { // 重新弹起登录界面（手动退出，跳过自动登录）
+                    SyncData(); // 若登录成功，重新拉取新用户数据
+                    ShowWindow(hWnd, SW_SHOW); // 恢复主界面显示
+                } else {
+                    PostQuitMessage(0); // 用户在登录界面点击了关闭，直接退出应用
+                }
+            }
             else if (cmd == 1003) PostQuitMessage(0);
             DestroyMenu(hTopSub); DestroyMenu(hMenu);
         } break;
@@ -487,52 +514,61 @@ bool ShowInputDialog(HWND parent, int type, std::wstring &o1, std::wstring &o2, 
 }
 
 // ------------------------------------------------------------------
-// 以下是完整的登录逻辑 (重试机制 + 断网检测 + 自动登录)
+// 以下是完整的登录逻辑 (重试机制 + 安全防护)
 // ------------------------------------------------------------------
+
 void LoadLoginConfig(WCHAR* email, WCHAR* password, bool& savePass, bool& autoLogin) {
-    // TODO: 从本地读取保存的邮箱、密码和复选框状态
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+
+    autoLogin = GetPrivateProfileIntW(L"Auth", L"AutoLogin", 0, path) != 0;
+    savePass = !g_SavedPass.empty();
+
+    if (!g_SavedEmail.empty()) {
+        lstrcpynW(email, g_SavedEmail.c_str(), 128);
+    } else {
+        email[0] = L'\0';
+    }
+
+    if (savePass) {
+        lstrcpynW(password, g_SavedPass.c_str(), 128);
+    } else {
+        password[0] = L'\0';
+    }
 }
 
 void SaveLoginConfig(const WCHAR* email, const WCHAR* password, bool savePass, bool autoLogin) {
-    // TODO: 将当前状态保存到本地
+    SaveSettings(g_UserId, g_Username, email, password, savePass);
+
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+    WritePrivateProfileStringW(L"Auth", L"AutoLogin", autoLogin ? L"1" : L"0", path);
 }
 
-// 动态加载 wininet.dll 检测网络，避免 MinGW 的 MSVC-pragma 静态链接丢失问题
-bool IsNetworkConnected() {
-    static HMODULE hWinInet = LoadLibraryW(L"wininet.dll");
-    if (hWinInet) {
-        typedef BOOL(__stdcall *PfnInternetGetConnectedState)(LPDWORD, DWORD);
-        static PfnInternetGetConnectedState pGetConnectedState =
-            (PfnInternetGetConnectedState)GetProcAddress(hWinInet, "InternetGetConnectedState");
-
-        if (pGetConnectedState) {
-            DWORD flags = 0;
-            return pGetConnectedState(&flags, 0) == TRUE;
-        }
-    }
-    return true; // 如果系统无法加载检测函数，默认放行，交由接口自身抛错重试
-}
-
+// 剥离原有的动态加载 wininet 逻辑，改为原生安全重试循环
 bool ExecuteLoginWithRetry(HWND hWnd, const WCHAR* email, const WCHAR* password) {
-    int maxRetries = 5;
-    bool lastNetworkState = IsNetworkConnected();
-
-    for (int i = 0; i < maxRetries; ++i) {
+    for (int i = 0; i < 5; ++i) {
         if (ApiLogin(email, password) == "SUCCESS") return true;
-        if (i == maxRetries - 1) break;
 
+        if (i == 4) break; // 最后一次失败不再等待
+
+        // 简化的安全等待循环，防止消息队列拥堵和窗体提前被销毁造成的奔溃
         DWORD startTick = GetTickCount();
-        while (GetTickCount() - startTick < 2500) {
+        while (GetTickCount() - startTick < 2000) {
             MSG msg;
             while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) {
+                    PostQuitMessage((int)msg.wParam);
+                    return false; // 如果遇到退出信号，直接终止重试
+                }
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             }
-            bool currentNetworkState = IsNetworkConnected();
-            if (currentNetworkState != lastNetworkState) {
-                lastNetworkState = currentNetworkState;
-                if (currentNetworkState) break;
-            }
+            if (hWnd && !IsWindow(hWnd)) return false; // 严防访问已经被用户手抖关闭的失效句柄
             Sleep(50);
         }
     }
@@ -540,7 +576,21 @@ bool ExecuteLoginWithRetry(HWND hWnd, const WCHAR* email, const WCHAR* password)
 }
 
 LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
+    static bool isLoggingIn = false; // 状态锁：防止快速双击或回车产生死循环重入
+
+    // 监听"保存密码"复选框：取消勾选时同步取消"自动登录"
+    if (msg == WM_COMMAND && LOWORD(wp) == 103 && HIWORD(wp) == BN_CLICKED) {
+        bool saveChecked = SendDlgItemMessage(hWnd, 103, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (!saveChecked) {
+            SendDlgItemMessage(hWnd, 104, BM_SETCHECK, BST_UNCHECKED, 0);
+        }
+        return 0;
+    }
+
     if (msg == WM_COMMAND && LOWORD(wp) == IDOK) {
+        if (isLoggingIn) return 0;
+        isLoggingIn = true;
+
         HWND hBtn = GetDlgItem(hWnd, IDOK);
         EnableWindow(hBtn, FALSE);
         SetWindowTextW(hBtn, L"登录中...");
@@ -549,10 +599,18 @@ LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         GetDlgItemTextW(hWnd, 101, e, 128);
         GetDlgItemTextW(hWnd, 102, p, 128);
 
-        if (ExecuteLoginWithRetry(hWnd, e, p)) {
+        bool success = ExecuteLoginWithRetry(hWnd, e, p);
+
+        // 如果在登录重试期间窗体被用户强行关闭，拦截后续一切操作以防内存溢出
+        if (!IsWindow(hWnd)) {
+            isLoggingIn = false;
+            return 0;
+        }
+
+        if (success) {
             g_LoginSuccess = true;
             bool savePass = SendDlgItemMessage(hWnd, 103, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            bool autoLogin = SendDlgItemMessage(hWnd, 104, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            bool autoLogin = savePass && (SendDlgItemMessage(hWnd, 104, BM_GETCHECK, 0, 0) == BST_CHECKED);
             SaveLoginConfig(e, p, savePass, autoLogin);
             DestroyWindow(hWnd);
         } else {
@@ -560,14 +618,21 @@ LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetWindowTextW(hBtn, L"登录");
             MessageBoxW(hWnd, L"登录失败，请检查网络连接或账号密码。", L"错误", MB_ICONERROR);
         }
+
+        isLoggingIn = false;
+        return 0;
     }
     else if (msg == WM_DESTROY) {
-        PostQuitMessage(0);
+        // 只有在登录失败/用户手动关闭时才退出消息循环
+        // 登录成功时由 ShowLogin() 里的 IsWindow 检查跳出循环，不在此发 WM_QUIT
+        if (!g_LoginSuccess) {
+            PostQuitMessage(0);
+        }
     }
     return DefWindowProc(hWnd, msg, wp, lp);
 }
 
-bool ShowLogin() {
+bool ShowLogin(bool isManualLogout) {
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = LoginWndProc;
     wc.hInstance = GetModuleHandle(NULL);
@@ -596,18 +661,23 @@ bool ShowLogin() {
     bool savePass = false, autoLogin = false;
     LoadLoginConfig(savedEmail, savedPass, savePass, autoLogin);
 
+    // 无论如何，只要有保存的邮箱/密码就填入并勾选"保存密码"
     if (savePass) {
         SetDlgItemTextW(h, 101, savedEmail);
         SetDlgItemTextW(h, 102, savedPass);
         SendDlgItemMessage(h, 103, BM_SETCHECK, BST_CHECKED, 0);
     }
 
+    // 手动退出登录时：显示"自动登录"勾选状态但不触发自动登录，让用户手动点击
+    // 自启/正常启动时：若勾选了"自动登录"则直接静默登录
     if (autoLogin) {
         SendDlgItemMessage(h, 104, BM_SETCHECK, BST_CHECKED, 0);
-        if (ExecuteLoginWithRetry(h, savedEmail, savedPass)) {
-            g_LoginSuccess = true;
-            DestroyWindow(h);
-            return true;
+        if (!isManualLogout) {
+            if (ExecuteLoginWithRetry(h, savedEmail, savedPass)) {
+                g_LoginSuccess = true;
+                DestroyWindow(h);
+                return true;
+            }
         }
     }
 
@@ -615,10 +685,14 @@ bool ShowLogin() {
     UpdateWindow(h);
 
     MSG m;
-    while(GetMessage(&m, NULL, 0, 0)) {
+    while(GetMessage(&m, NULL, 0, 0) > 0) {
         TranslateMessage(&m);
         DispatchMessage(&m);
         if(!IsWindow(h)) break;
+    }
+    // 若是因 WM_QUIT 退出循环（用户关闭窗口），重新投递以让 WinMain 感知
+    if (m.message == WM_QUIT) {
+        PostQuitMessage((int)m.wParam);
     }
     return g_LoginSuccess;
 }
