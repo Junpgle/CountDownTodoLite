@@ -15,7 +15,7 @@ using json = nlohmann::json;
 
 // --- 自动更新模块 ---
 // 当前内部版本号（每次发布新版本时递增，必须与服务器端 manifest 中的 version_code 对应）
-const int CURRENT_VERSION_CODE = 6;
+const int CURRENT_VERSION_CODE = 7;
 
 /**
  * 检查版本更新
