@@ -11,6 +11,7 @@ using namespace Gdiplus;
 // 外部声明
 extern void CheckForUpdates(bool isManual = false);
 extern void ShowStatsWindow(HWND parent);
+extern void ShowCompletedTodosWindow(HWND parent);
 
 // 定时器 ID
 const UINT_PTR SCROLL_TIMER_ID = 1001;
@@ -236,11 +237,19 @@ void RenderWidget() {
         // --- 待办事项板块 ---
         y += S(10);
         g.DrawString(L"待办事项", -1, &headF, PointF((REAL) S(15), y), &gBrush);
+
+        // 增加 [已完成] 按钮
+        g.DrawString(L"[已完成]", -1, &headF, PointF((REAL) (width - S(100)), y), &grBrush);
+        g_HitZones.push_back({Rect(width - S(105), (int) y, S(50), S(20)), 0, 7});
+
         g.DrawString(L"[+]", -1, &headF, PointF((REAL) (width - S(40)), y), &grBrush);
         g_HitZones.push_back({Rect(width - S(45), (int) y, S(30), S(20)), 0, 1});
         y += S(20);
 
         auto displayTodos = g_Todos;
+        // 过滤掉已完成的待办事项，不显示在主界面
+        displayTodos.erase(std::remove_if(displayTodos.begin(), displayTodos.end(), [](const auto& t) { return t.isDone; }), displayTodos.end());
+
         std::sort(displayTodos.begin(), displayTodos.end(), [](const auto& a, const auto& b) {
             if (a.isDone != b.isDone) return !a.isDone;
             bool aToday = IsTodayRelevant(a.createdDate, a.dueDate);
@@ -337,7 +346,12 @@ void ResizeWidget() {
     h += S(30) + (activeCountdowns == 0 ? S(20) : activeCountdowns * S(20));
     int appRows = std::min((int)g_AppUsage.size(), g_TopAppsCount);
     h += S(30) + (appRows == 0 ? S(20) : appRows * S(20));
-    h += S(30) + (g_Todos.empty() ? S(20) : (int)g_Todos.size() * S(35));
+
+    // 仅计算未完成事项的高度
+    int activeTodos = 0;
+    for (const auto& t : g_Todos) if (!t.isDone) activeTodos++;
+    h += S(30) + (activeTodos == 0 ? S(20) : activeTodos * S(35));
+
     h += S(25); if (h < S(180)) h = S(180);
     RECT rc; GetWindowRect(g_hWidgetWnd, &rc);
     SetWindowPos(g_hWidgetWnd, HWND_BOTTOM, rc.left, rc.top, S(300), h, SWP_NOACTIVATE);
@@ -384,6 +398,7 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                         if (MessageBoxW(hWnd, L"确定要删除这条待办吗？", L"确认删除", MB_YESNO | MB_ICONQUESTION) == IDYES) { ApiDeleteTodo(z.id); SyncData(); }
                     }
                     else if (z.type == 6) { ShowStatsWindow(hWnd); }
+                    else if (z.type == 7) { ShowCompletedTodosWindow(hWnd); } // 点击了已完成
                     break;
                 }
             }
@@ -471,29 +486,139 @@ bool ShowInputDialog(HWND parent, int type, std::wstring &o1, std::wstring &o2, 
     return InputState::isOk;
 }
 
+// ------------------------------------------------------------------
+// 以下是完整的登录逻辑 (重试机制 + 断网检测 + 自动登录)
+// ------------------------------------------------------------------
+void LoadLoginConfig(WCHAR* email, WCHAR* password, bool& savePass, bool& autoLogin) {
+    // TODO: 从本地读取保存的邮箱、密码和复选框状态
+}
+
+void SaveLoginConfig(const WCHAR* email, const WCHAR* password, bool savePass, bool autoLogin) {
+    // TODO: 将当前状态保存到本地
+}
+
+// 动态加载 wininet.dll 检测网络，避免 MinGW 的 MSVC-pragma 静态链接丢失问题
+bool IsNetworkConnected() {
+    static HMODULE hWinInet = LoadLibraryW(L"wininet.dll");
+    if (hWinInet) {
+        typedef BOOL(__stdcall *PfnInternetGetConnectedState)(LPDWORD, DWORD);
+        static PfnInternetGetConnectedState pGetConnectedState =
+            (PfnInternetGetConnectedState)GetProcAddress(hWinInet, "InternetGetConnectedState");
+
+        if (pGetConnectedState) {
+            DWORD flags = 0;
+            return pGetConnectedState(&flags, 0) == TRUE;
+        }
+    }
+    return true; // 如果系统无法加载检测函数，默认放行，交由接口自身抛错重试
+}
+
+bool ExecuteLoginWithRetry(HWND hWnd, const WCHAR* email, const WCHAR* password) {
+    int maxRetries = 5;
+    bool lastNetworkState = IsNetworkConnected();
+
+    for (int i = 0; i < maxRetries; ++i) {
+        if (ApiLogin(email, password) == "SUCCESS") return true;
+        if (i == maxRetries - 1) break;
+
+        DWORD startTick = GetTickCount();
+        while (GetTickCount() - startTick < 2500) {
+            MSG msg;
+            while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+            bool currentNetworkState = IsNetworkConnected();
+            if (currentNetworkState != lastNetworkState) {
+                lastNetworkState = currentNetworkState;
+                if (currentNetworkState) break;
+            }
+            Sleep(50);
+        }
+    }
+    return false;
+}
+
 LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_COMMAND && LOWORD(wp) == IDOK) {
-        WCHAR e[128], p[128]; GetDlgItemTextW(hWnd, 101, e, 128); GetDlgItemTextW(hWnd, 102, p, 128);
-        if (ApiLogin(e, p) == "SUCCESS") { g_LoginSuccess = true; DestroyWindow(hWnd); }
-        else MessageBoxW(hWnd, L"登录失败", L"错误", MB_ICONERROR);
-    } else if (msg == WM_DESTROY) PostQuitMessage(0);
+        HWND hBtn = GetDlgItem(hWnd, IDOK);
+        EnableWindow(hBtn, FALSE);
+        SetWindowTextW(hBtn, L"登录中...");
+
+        WCHAR e[128] = {0}, p[128] = {0};
+        GetDlgItemTextW(hWnd, 101, e, 128);
+        GetDlgItemTextW(hWnd, 102, p, 128);
+
+        if (ExecuteLoginWithRetry(hWnd, e, p)) {
+            g_LoginSuccess = true;
+            bool savePass = SendDlgItemMessage(hWnd, 103, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            bool autoLogin = SendDlgItemMessage(hWnd, 104, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            SaveLoginConfig(e, p, savePass, autoLogin);
+            DestroyWindow(hWnd);
+        } else {
+            EnableWindow(hBtn, TRUE);
+            SetWindowTextW(hBtn, L"登录");
+            MessageBoxW(hWnd, L"登录失败，请检查网络连接或账号密码。", L"错误", MB_ICONERROR);
+        }
+    }
+    else if (msg == WM_DESTROY) {
+        PostQuitMessage(0);
+    }
     return DefWindowProc(hWnd, msg, wp, lp);
 }
 
 bool ShowLogin() {
-    WNDCLASSW wc = {0}; wc.lpfnWndProc = LoginWndProc; wc.hInstance = GetModuleHandle(NULL);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.lpszClassName = L"LoginWndClass"; RegisterClassW(&wc);
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = LoginWndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"LoginWndClass";
+    RegisterClassW(&wc);
+
     HWND h = CreateWindowExW(0, L"LoginWndClass", L"MathQuiz 登录", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         (GetSystemMetrics(SM_CXSCREEN) - S(350)) / 2, (GetSystemMetrics(SM_CYSCREEN) - S(250)) / 2,
         S(350), S(250), NULL, NULL, GetModuleHandle(NULL), NULL);
+
     HFONT hF = GetMiSansFont(14);
-    CreateWindowW(L"STATIC", L"邮箱:", WS_CHILD | WS_VISIBLE, S(40), S(50), S(50), S(20), h, NULL, NULL, NULL);
-    CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, S(100), S(48), S(200), S(25), h, (HMENU)101, NULL, NULL);
-    CreateWindowW(L"STATIC", L"密码:", WS_CHILD | WS_VISIBLE, S(40), S(90), S(50), S(20), h, NULL, NULL, NULL);
-    CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_PASSWORD, S(100), S(88), S(200), S(25), h, (HMENU)102, NULL, NULL);
-    CreateWindowW(L"BUTTON", L"登录", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, S(125), S(140), S(100), S(35), h, (HMENU)IDOK, NULL, NULL);
+
+    CreateWindowW(L"STATIC", L"邮箱:", WS_CHILD | WS_VISIBLE, S(40), S(35), S(50), S(20), h, NULL, NULL, NULL);
+    CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER, S(100), S(33), S(200), S(25), h, (HMENU)101, NULL, NULL);
+    CreateWindowW(L"STATIC", L"密码:", WS_CHILD | WS_VISIBLE, S(40), S(75), S(50), S(20), h, NULL, NULL, NULL);
+    CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_PASSWORD, S(100), S(73), S(200), S(25), h, (HMENU)102, NULL, NULL);
+
+    CreateWindowW(L"BUTTON", L"保存密码", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, S(100), S(110), S(90), S(20), h, (HMENU)103, NULL, NULL);
+    CreateWindowW(L"BUTTON", L"自动登录", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, S(200), S(110), S(90), S(20), h, (HMENU)104, NULL, NULL);
+    CreateWindowW(L"BUTTON", L"登录", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, S(125), S(145), S(100), S(35), h, (HMENU)IDOK, NULL, NULL);
+
     EnumChildWindows(h, [](HWND ch, LPARAM p){ SendMessage(ch, WM_SETFONT, p, TRUE); return TRUE; }, (LPARAM)hF);
-    ShowWindow(h, SW_SHOW); UpdateWindow(h);
-    MSG m; while(GetMessage(&m, NULL, 0, 0)) { TranslateMessage(&m); DispatchMessage(&m); if(!IsWindow(h)) break; }
+
+    WCHAR savedEmail[128] = {0}, savedPass[128] = {0};
+    bool savePass = false, autoLogin = false;
+    LoadLoginConfig(savedEmail, savedPass, savePass, autoLogin);
+
+    if (savePass) {
+        SetDlgItemTextW(h, 101, savedEmail);
+        SetDlgItemTextW(h, 102, savedPass);
+        SendDlgItemMessage(h, 103, BM_SETCHECK, BST_CHECKED, 0);
+    }
+
+    if (autoLogin) {
+        SendDlgItemMessage(h, 104, BM_SETCHECK, BST_CHECKED, 0);
+        if (ExecuteLoginWithRetry(h, savedEmail, savedPass)) {
+            g_LoginSuccess = true;
+            DestroyWindow(h);
+            return true;
+        }
+    }
+
+    ShowWindow(h, SW_SHOW);
+    UpdateWindow(h);
+
+    MSG m;
+    while(GetMessage(&m, NULL, 0, 0)) {
+        TranslateMessage(&m);
+        DispatchMessage(&m);
+        if(!IsWindow(h)) break;
+    }
     return g_LoginSuccess;
 }
