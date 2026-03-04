@@ -108,6 +108,10 @@ void LoadSettings() {
     PathAppendW(path, SETTINGS_FILE.c_str());
     g_UserId = GetPrivateProfileIntW(L"Auth", L"UserId", 0, path);
     g_BgAlpha = GetPrivateProfileIntW(L"Settings", L"BgAlpha", 100, path);
+
+    // 🚀 加载自动同步频率
+    g_SyncInterval = GetPrivateProfileIntW(L"Auth", L"SyncInterval", 5, path);
+
     WCHAR buf[256];
     GetPrivateProfileStringW(L"Auth", L"Username", L"", buf, 256, path);
     g_Username = buf;
@@ -143,6 +147,9 @@ void SaveSettings(int uid, const std::wstring &name, const std::wstring &email, 
     WritePrivateProfileStringW(L"Auth", L"Email", email.c_str(), path);
     if (savePass) WritePrivateProfileStringW(L"Auth", L"Pass", EncryptString(pass).c_str(), path);
     else WritePrivateProfileStringW(L"Auth", L"Pass", NULL, path);
+
+    // 🚀 同时同步保存同步频率
+    WritePrivateProfileStringW(L"Auth", L"SyncInterval", std::to_wstring(g_SyncInterval).c_str(), path);
 }
 
 void SaveAlphaSetting() {

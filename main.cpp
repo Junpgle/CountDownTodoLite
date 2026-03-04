@@ -15,7 +15,7 @@ using json = nlohmann::json;
 
 // --- 自动更新模块 ---
 // 当前内部版本号（每次发布新版本时递增，必须与服务器端 manifest 中的 version_code 对应）
-const int CURRENT_VERSION_CODE = 7;
+const int CURRENT_VERSION_CODE = 8;
 
 /**
  * 检查版本更新
@@ -160,14 +160,6 @@ void CheckForUpdates(bool isManual = false) {
 
 
 int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
-
-    // 🚀 强制显示控制台用于调试
-    AllocConsole();
-    freopen("CONOUT$", "w", stdout);
-    // 如果需要看到 std::wcout 还需要这一行：
-    std::locale::global(std::locale(""));
-
-
     g_hInst = hI;
 
     // 初始化 DPI 适配
