@@ -348,3 +348,54 @@ void SyncData() {
         LogMessage(L"聚合同步数据解析失败");
     }
 }
+
+/**
+ * 🚀 新增：手动拉取课程表逻辑 (单向下载，无上传)
+ */
+void ApiFetchCourses() {
+    if (g_UserId <= 0) return;
+
+    LogMessage(L"开始手动拉取课程表...");
+    std::wstring url = L"/api/courses?user_id=" + std::to_wstring(g_UserId);
+    std::string res = SendRequest(url, "GET", "");
+
+    if (res.empty() || res.find("ERROR") == 0) {
+        LogMessage(L"课程表拉取失败: 网络异常");
+        return;
+    }
+
+    try {
+        auto jArr = json::parse(res);
+        if (jArr.is_array()) {
+            std::vector<Course> tempCourses;
+            for (auto &it : jArr) {
+                Course c;
+                c.id = it.value("id", 0);
+                c.courseName = ToWide(it.value("course_name", "未知课程"));
+                c.roomName = ToWide(it.value("room_name", "未知教室"));
+                c.teacherName = ToWide(it.value("teacher_name", ""));
+                c.startTime = it.value("start_time", 0);
+                c.endTime = it.value("end_time", 0);
+                c.weekday = it.value("weekday", 1);
+                c.weekIndex = it.value("week_index", 1);
+                if (it.contains("lesson_type") && !it["lesson_type"].is_null()) {
+                    c.lessonType = ToWide(it.value("lesson_type", ""));
+                }
+                tempCourses.push_back(c);
+            }
+
+            std::lock_guard<std::recursive_mutex> l(g_DataMutex);
+            g_Courses = tempCourses;
+
+            LogMessage(L"课程表拉取成功! 共 " + std::to_wstring(tempCourses.size()) + L" 节课");
+
+            if (g_hWidgetWnd) {
+                PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+            }
+        } else if (jArr.is_object() && jArr.contains("error")) {
+            LogMessage(L"课程表拉取被拒绝: " + ToWide(jArr["error"].get<std::string>()));
+        }
+    } catch (...) {
+        LogMessage(L"课程表数据解析 JSON 失败");
+    }
+}

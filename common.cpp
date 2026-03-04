@@ -34,6 +34,7 @@ std::vector<Todo> g_Todos;
 std::vector<Countdown> g_Countdowns;
 std::vector<HitZone> g_HitZones;
 std::vector<AppUsageRecord> g_AppUsage;
+std::vector<Course> g_Courses;
 
 namespace InputState {
     std::wstring result1;

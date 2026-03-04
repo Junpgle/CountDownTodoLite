@@ -3,6 +3,7 @@
 #include "api.h"
 #include "common.h" // 🚀 必须包含 .h 而非 .cpp
 #include "stats_window.h"
+#include "weekly_view_window.h" // 🚀 引入周视图头文件
 #include <commctrl.h>
 #include <algorithm>
 #include <ctime>
@@ -27,7 +28,7 @@ LRESULT CALLBACK InputWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp);
 void SaveLoginConfig(const WCHAR* email, const WCHAR* password, bool savePass, bool autoLogin);
 
 
-// 内部辅助：字符串转 SYSTEMTIME (🚀 增强：支持解析时间)
+// 内部辅助：字符串转 SYSTEMTIME (支持解析时间)
 void StringToSystemTime(const std::wstring& dateStr, SYSTEMTIME& st) {
     GetLocalTime(&st);
     int y, m, d, hr = 0, min = 0;
@@ -42,7 +43,7 @@ void StringToSystemTime(const std::wstring& dateStr, SYSTEMTIME& st) {
     }
 }
 
-// 内部辅助：解析日期字符串为 time_t (🚀 增强：支持精确到分钟的计算)
+// 内部辅助：解析日期字符串为 time_t (支持精确到分钟的计算)
 time_t ParseWStringDate(const std::wstring& s, bool endOfDayFallback) {
     int y, m, d, hr = 0, min = 0;
     int count = swscanf(s.c_str(), L"%d-%d-%d %d:%d", &y, &m, &d, &hr, &min);
@@ -205,6 +206,23 @@ void RenderWidget() {
 
         // --- 倒计时板块 ---
         g.DrawString(L"重要日", -1, &headF, PointF((REAL) S(15), y), &gBrush);
+
+        // 🚀 绘制手绘风格的“日历小图标” (周视图入口)
+        float calX = (float)(width - S(75));
+        float calY = y + S(2);
+        Pen calPen(Color(255, 180, 180, 180), 1.5f);
+        SolidBrush calFill(Color(255, 180, 180, 180));
+        // 主体方框
+        g.DrawRectangle(&calPen, calX, calY, (REAL)S(16), (REAL)S(14));
+        // 顶栏分割线
+        g.DrawLine(&calPen, calX, calY + S(5), calX + S(16), calY + S(5));
+        // 顶部的两个小环（活页环）
+        g.FillRectangle(&calFill, calX + S(3), calY - S(2), (REAL)S(2), (REAL)S(4));
+        g.FillRectangle(&calFill, calX + S(11), calY - S(2), (REAL)S(2), (REAL)S(4));
+        // 添加日历命中区 (type = 8 代表周视图)
+        g_HitZones.push_back({Rect((int)calX - S(5), (int)y, S(25), S(20)), 0, 8});
+
+        // 原有的 [+] 按钮
         g.DrawString(L"[+]", -1, &headF, PointF((REAL) (width - S(40)), y), &grBrush);
         g_HitZones.push_back({Rect(width - S(45), (int) y, S(30), S(20)), 0, 2});
         y += S(20);
@@ -269,7 +287,7 @@ void RenderWidget() {
         y += S(20);
 
         auto displayTodos = g_Todos;
-        // 过滤掉已完成的待办事项，不显示在主界面
+        // 过滤掉已完成的待办事项
         displayTodos.erase(std::remove_if(displayTodos.begin(), displayTodos.end(), [](const auto& t) { return t.isDone; }), displayTodos.end());
 
         std::sort(displayTodos.begin(), displayTodos.end(), [](const auto& a, const auto& b) {
@@ -298,7 +316,7 @@ void RenderWidget() {
                 g.DrawRectangle(&linePen, S(15), (int) y + S(6), S(12), S(12));
                 if (it.isDone) g.FillRectangle(&wBrush, S(17), (int) y + S(8), S(8), S(8));
 
-                // --- 滚动文字实现 (带暂停功能) ---
+                // --- 滚动文字实现 ---
                 std::wstring dispContent = it.content;
                 const size_t MAX_LEN = 5;
                 if (dispContent.length() > MAX_LEN && !it.isDone) {
@@ -306,16 +324,14 @@ void RenderWidget() {
                     std::wstring scrollText = dispContent + spacer;
                     size_t textLen = scrollText.length();
 
-                    // 配置参数
-                    const DWORD PAUSE_MS = 5000;    // 停顿 5 秒
-                    const DWORD SPEED_MS = 300;     // 每滚动一个字符花 0.3 秒
+                    const DWORD PAUSE_MS = 5000;
+                    const DWORD SPEED_MS = 300;
                     DWORD cycleTotalTime = PAUSE_MS + (textLen * SPEED_MS);
 
                     DWORD currentTime = GetTickCount() % cycleTotalTime;
                     size_t offset = 0;
 
                     if (currentTime > PAUSE_MS) {
-                        // 过了停顿时段，开始计算滚动位移
                         offset = (currentTime - PAUSE_MS) / SPEED_MS;
                     }
 
@@ -339,7 +355,7 @@ void RenderWidget() {
                     g.FillRectangle(&barFg, S(32), (int)y + S(24), (int)((width - S(90)) * progress), S(4));
 
                     std::wstring dateLabel = (!it.dueDate.empty()) ?
-                        (it.createdDate.substr(0, 16) + L" 至 " + it.dueDate.substr(11, 5)) : // 🚀 优化显示：开始全显，结束显时间
+                        (it.createdDate.substr(0, 16) + L" 至 " + it.dueDate.substr(11, 5)) :
                         (L"开始: " + it.createdDate.substr(0, 16));
 
                     RectF layoutRect(0, 0, (REAL)width, (REAL)S(20));
@@ -420,7 +436,8 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                         if (MessageBoxW(hWnd, L"确定要删除这条待办吗？", L"确认删除", MB_YESNO | MB_ICONQUESTION) == IDYES) { ApiDeleteTodo(z.id); SyncData(); }
                     }
                     else if (z.type == 6) { ShowStatsWindow(hWnd); }
-                    else if (z.type == 7) { ShowCompletedTodosWindow(hWnd); } // 点击了已完成
+                    else if (z.type == 7) { ShowCompletedTodosWindow(hWnd); }
+                    else if (z.type == 8) { ShowWeeklyViewWindow(hWnd); } // 🚀 响应点击，打开周视图
                     break;
                 }
             }
@@ -429,12 +446,11 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_RBUTTONUP: {
             POINT pt; GetCursorPos(&pt);
 
-            // 🚀 控制调用频率的局部静态变量
             static time_t s_lastFetchTime = 0;
             static bool s_isOffline = true;
             time_t now = time(nullptr);
 
-            // 🚀 5 分钟 (300秒) 触发一次限制逻辑
+            // 5 分钟 (300秒) 触发一次限制逻辑
             if (now - s_lastFetchTime >= 300) {
                 s_isOffline = !ApiFetchUserStatus();
                 s_lastFetchTime = now;
@@ -446,7 +462,6 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::wstring accInfo = L"账号: " + (g_Username.empty() ? L"未登录" : g_Username) + L" (" + g_UserTier + L")";
             AppendMenuW(hMenu, MF_DISABLED | MF_GRAYED, 0, accInfo.c_str());
 
-            // 🚀 核心修改：如果是离线/处于5分钟缓存期，给出明确的非最新提示
             std::wstring syncInfo = L"今日同步进度: " + std::to_wstring(g_SyncCount) + L" / " + std::to_wstring(g_SyncLimit);
             if (s_isOffline) {
                 syncInfo += L" (离线/非最新)";
@@ -454,14 +469,12 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             AppendMenuW(hMenu, MF_DISABLED | MF_GRAYED, 0, syncInfo.c_str());
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
-            // 统计排名子菜单
             HMENU hTopSub = CreatePopupMenu();
             AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 3 ? MF_CHECKED : 0), 3003, L"前 3");
             AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 5 ? MF_CHECKED : 0), 3005, L"前 5");
             AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 10 ? MF_CHECKED : 0), 3010, L"前 10");
             AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hTopSub, L"统计排名展示");
 
-            // 同步频率子菜单
             HMENU hFreqSub = CreatePopupMenu();
             AppendMenuW(hFreqSub, MF_STRING | (g_SyncInterval <= 0 ? MF_CHECKED : 0), 4000, L"从不");
             AppendMenuW(hFreqSub, MF_STRING | (g_SyncInterval == 5 ? MF_CHECKED : 0), 4005, L"每 5 分钟");
@@ -624,7 +637,6 @@ void LoadLoginConfig(WCHAR* email, WCHAR* password, bool& savePass, bool& autoLo
 
     g_SyncInterval = GetPrivateProfileIntW(L"Auth", L"SyncInterval", 5, path);
 
-    // 🚀 在初始化时，从本地 INI 文件读取之前保存的同步限额数据，兜底离线情况
     g_SyncCount = GetPrivateProfileIntW(L"Auth", L"SyncCount", 0, path);
     g_SyncLimit = GetPrivateProfileIntW(L"Auth", L"SyncLimit", 50, path);
     WCHAR tierBuf[64];

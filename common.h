@@ -7,7 +7,10 @@
 #define _UNICODE
 #endif
 
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
+
 #include <windows.h>
 #include <winhttp.h>
 #include <wincrypt.h>
@@ -55,6 +58,18 @@ struct Countdown {
     time_t lastUpdated;
 };
 
+struct Course {
+    int id;
+    std::wstring courseName;
+    std::wstring roomName;
+    std::wstring teacherName;
+    int startTime;
+    int endTime;
+    int weekday;
+    int weekIndex;
+    std::wstring lessonType;
+};
+
 struct AppUsageRecord {
     std::wstring appName;
     std::wstring deviceName;
@@ -100,6 +115,7 @@ extern std::vector<Todo> g_Todos;
 extern std::vector<Countdown> g_Countdowns;
 extern std::vector<HitZone> g_HitZones;
 extern std::vector<AppUsageRecord> g_AppUsage;
+extern std::vector<Course> g_Courses;
 
 namespace InputState {
     extern std::wstring result1;

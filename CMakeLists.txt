@@ -15,6 +15,8 @@ add_executable(MathQuizLite
         stats_window.h
         stats_window.cpp
         completed_todos_window.cpp
+        weekly_view_window.cpp
+        weekly_view_window.h
 )
 
 # 强制指定为 Windows GUI 子系统，隐藏控制台窗口

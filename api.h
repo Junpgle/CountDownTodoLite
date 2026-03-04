@@ -26,3 +26,6 @@ bool ApiFetchUserStatus();
 
 // 全局同步任务
 void SyncData();
+
+// 课表同步
+void ApiFetchCourses(); // 🚀 新增这一行
