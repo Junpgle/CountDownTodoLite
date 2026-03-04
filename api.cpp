@@ -5,28 +5,13 @@
 #include <ctime>
 #include <debugapi.h>
 #include <iostream>
-#include <shlwapi.h> // 🚀 引入 SHLWAPI 以便写入 INI 文件
+#include <shlwapi.h> // 🚀 引入 SHLWAPI 以便写入文件
 
 #pragma comment(lib, "shlwapi.lib")
 
 using json = nlohmann::json;
 
-// 🚀 前瞻声明修改为返回 bool，以便 UI 层知道是否网络正常
 bool ApiFetchUserStatus();
-
-/**
- * 🚀 内部辅助：保存同步状态到本地 INI 文件
- */
-void SaveSyncStatusToLocal() {
-    WCHAR path[MAX_PATH];
-    GetModuleFileNameW(NULL, path, MAX_PATH);
-    PathRemoveFileSpecW(path);
-    PathAppendW(path, SETTINGS_FILE.c_str());
-
-    WritePrivateProfileStringW(L"Auth", L"UserTier", g_UserTier.c_str(), path);
-    WritePrivateProfileStringW(L"Auth", L"SyncCount", std::to_wstring(g_SyncCount).c_str(), path);
-    WritePrivateProfileStringW(L"Auth", L"SyncLimit", std::to_wstring(g_SyncLimit).c_str(), path);
-}
 
 /**
  * 内部辅助：统一日志输出
@@ -50,8 +35,107 @@ void LogMessage(const std::wstring &msg) {
 }
 
 /**
- * 内部辅助函数：发送网络请求
+ * 🚀 内部辅助：保存同步状态到本地 INI 文件
  */
+void SaveSyncStatusToLocal() {
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+
+    WritePrivateProfileStringW(L"Auth", L"UserTier", g_UserTier.c_str(), path);
+    WritePrivateProfileStringW(L"Auth", L"SyncCount", std::to_wstring(g_SyncCount).c_str(), path);
+    WritePrivateProfileStringW(L"Auth", L"SyncLimit", std::to_wstring(g_SyncLimit).c_str(), path);
+}
+
+/**
+ * 🚀 核心新增：将内存中的课程表保存至本地 JSON
+ */
+void SaveLocalCourses() {
+    try {
+        json jArr = json::array(); {
+            std::lock_guard<std::recursive_mutex> l(g_DataMutex);
+            for (const auto &c: g_Courses) {
+                json j;
+                j["id"] = c.id;
+                j["course_name"] = ToUtf8(c.courseName);
+                j["room_name"] = ToUtf8(c.roomName);
+                j["teacher_name"] = ToUtf8(c.teacherName);
+                j["start_time"] = c.startTime;
+                j["end_time"] = c.endTime;
+                j["weekday"] = c.weekday;
+                j["week_index"] = c.weekIndex;
+                j["lesson_type"] = ToUtf8(c.lessonType);
+                jArr.push_back(j);
+            }
+        }
+        WCHAR path[MAX_PATH];
+        GetModuleFileNameW(NULL, path, MAX_PATH);
+        PathRemoveFileSpecW(path);
+        PathAppendW(path, L"courses_cache.json");
+
+        HANDLE hFile = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            std::string s = jArr.dump();
+            DWORD written;
+            WriteFile(hFile, s.c_str(), (DWORD) s.length(), &written, NULL);
+            CloseHandle(hFile);
+            LogMessage(L"已成功将云端课表缓存至本地!");
+        }
+    } catch (...) {
+        LogMessage(L"保存本地课表缓存失败");
+    }
+}
+
+/**
+ * 🚀 核心新增：从本地 JSON 读取课程表
+ */
+void LoadLocalCourses() {
+    try {
+        WCHAR path[MAX_PATH];
+        GetModuleFileNameW(NULL, path, MAX_PATH);
+        PathRemoveFileSpecW(path);
+        PathAppendW(path, L"courses_cache.json");
+
+        HANDLE hFile = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                                   NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD size = GetFileSize(hFile, NULL);
+            if (size > 0) {
+                std::string s(size, '\0');
+                DWORD read;
+                ReadFile(hFile, &s[0], size, &read, NULL);
+
+                auto jArr = json::parse(s);
+                if (jArr.is_array()) {
+                    std::vector<Course> temp;
+                    for (auto &it: jArr) {
+                        Course c;
+                        c.id = it.value("id", 0);
+                        c.courseName = ToWide(it.value("course_name", ""));
+                        c.roomName = ToWide(it.value("room_name", ""));
+                        c.teacherName = ToWide(it.value("teacher_name", ""));
+                        c.startTime = it.value("start_time", 0);
+                        c.endTime = it.value("end_time", 0);
+                        c.weekday = it.value("weekday", 1);
+                        c.weekIndex = it.value("week_index", 1);
+                        c.lessonType = ToWide(it.value("lesson_type", ""));
+                        temp.push_back(c);
+                    }
+                    std::lock_guard<std::recursive_mutex> l(g_DataMutex);
+                    g_Courses = temp;
+                    LogMessage(L"成功从本地缓存加载了 " + std::to_wstring(temp.size()) + L" 节课程");
+                }
+            }
+            CloseHandle(hFile);
+        } else {
+            LogMessage(L"未发现本地课表缓存文件");
+        }
+    } catch (...) {
+        LogMessage(L"解析本地课表缓存失败");
+    }
+}
+
 std::string SendRequest(const std::wstring &path, const std::string &method, const std::string &body) {
     std::string response = "";
     HINTERNET hSession = WinHttpOpen(L"MathQuizLite/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
@@ -76,9 +160,7 @@ std::string SendRequest(const std::wstring &path, const std::string &method, con
     WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
 
     std::wstring headers = L"Content-Type: application/json\r\n";
-    if (g_UserId > 0) {
-        headers += L"x-user-id: " + std::to_wstring(g_UserId) + L"\r\n";
-    }
+    if (g_UserId > 0) headers += L"x-user-id: " + std::to_wstring(g_UserId) + L"\r\n";
 
     if (WinHttpSendRequest(hRequest, headers.c_str(), -1, (LPVOID) body.c_str(), (DWORD) body.length(),
                            (DWORD) body.length(), 0)) {
@@ -117,10 +199,7 @@ std::string ApiLogin(const std::wstring &email, const std::wstring &password) {
             g_UserId = resp["user"]["id"].get<int>();
             g_Username = ToWide(resp["user"]["username"].get<std::string>());
             if (resp["user"].contains("tier")) g_UserTier = ToWide(resp["user"]["tier"].get<std::string>());
-
-            // 登录成功时也获取一次限额数据
             ApiFetchUserStatus();
-
             return "SUCCESS";
         }
         if (resp.contains("error")) return resp["error"].get<std::string>();
@@ -221,72 +300,52 @@ std::map<std::wstring, int> ApiSyncScreenTime(const std::map<std::wstring, int> 
     return agg.empty() ? localData : agg;
 }
 
-/**
- * 🚀 获取限额状态 (现在返回 bool 以便 UI 知道是否断网)
- */
 bool ApiFetchUserStatus() {
     if (g_UserId <= 0) return false;
-
     LogMessage(L"开始限额同步...");
     std::wstring statusUrl = L"/api/user/status?user_id=" + std::to_wstring(g_UserId);
     std::string res = SendRequest(statusUrl, "GET", "");
-
     if (res.empty() || res.find("ERROR") == 0) {
         LogMessage(L"限额状态拉取失败 (离线)");
-        return false; // 返回失败
+        return false;
     }
-
     try {
         auto resp = json::parse(res);
         if (resp.contains("success") && resp["success"].get<bool>()) {
             if (resp.contains("tier")) g_UserTier = ToWide(resp["tier"].get<std::string>());
             if (resp.contains("sync_count")) g_SyncCount = resp["sync_count"].get<int>();
             if (resp.contains("sync_limit")) g_SyncLimit = resp["sync_limit"].get<int>();
-
-            std::wstring debugMsg = L"同步限额状态已更新: " + std::to_wstring(g_SyncCount) + L"/" + std::to_wstring(g_SyncLimit);
-            LogMessage(debugMsg);
-
-            SaveSyncStatusToLocal(); // 🚀 成功获取后，保存到本地 INI 缓存
-
+            SaveSyncStatusToLocal();
             if (g_hWidgetWnd)
                 PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
-            return true; // 返回成功
+            return true;
         }
-    } catch (...) {
-        LogMessage(L"限额状态解析 JSON 异常");
-    }
+    } catch (...) { LogMessage(L"限额状态解析 JSON 异常"); }
     return false;
 }
 
 void SyncData() {
     if (g_UserId <= 0) return;
-
     std::wstring freqLog = (g_SyncInterval > 0)
                                ? L"执行定时自动同步 (周期: " + std::to_wstring(g_SyncInterval) + L" 分钟)..."
                                : L"执行手动/初始化同步...";
     LogMessage(freqLog);
-
     std::wstring syncUrl = L"/api/sync_all?user_id=" + std::to_wstring(g_UserId);
     std::string res = SendRequest(syncUrl, "GET", "");
-
     if (res.empty() || res.find("ERROR") == 0) {
         LogMessage(L"聚合同步失败: 网络错误");
         return;
     }
-
     try {
         auto resp = json::parse(res);
         if (!resp.contains("success") || !resp["success"].get<bool>()) {
             LogMessage(L"聚合同步失败: 服务器业务异常");
             return;
         }
-
         if (resp.contains("tier")) g_UserTier = ToWide(resp["tier"].get<std::string>());
         if (resp.contains("sync_count")) g_SyncCount = resp["sync_count"].get<int>();
         if (resp.contains("sync_limit")) g_SyncLimit = resp["sync_limit"].get<int>();
-
-        SaveSyncStatusToLocal(); // 🚀 聚合同步成功时也刷新本地缓存
-
+        SaveSyncStatusToLocal();
         auto data = resp["data"];
         int todoCount = 0;
         int countdownCount = 0;
@@ -337,25 +396,17 @@ void SyncData() {
             std::lock_guard<std::recursive_mutex> l(g_DataMutex);
             g_Countdowns = tempCds;
         }
-
         std::wstring resultMsg = L"聚合同步完成! (待办: " + std::to_wstring(todoCount) + L", 倒计时: " +
                                  std::to_wstring(countdownCount) + L")";
         LogMessage(resultMsg);
-
         if (g_hWidgetWnd)
             PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
-    } catch (...) {
-        LogMessage(L"聚合同步数据解析失败");
-    }
+    } catch (...) { LogMessage(L"聚合同步数据解析失败"); }
 }
 
-/**
- * 🚀 新增：手动拉取课程表逻辑 (单向下载，无上传)
- */
 void ApiFetchCourses() {
     if (g_UserId <= 0) return;
-
-    LogMessage(L"开始手动拉取课程表...");
+    LogMessage(L"开始从云端拉取最新课程表...");
     std::wstring url = L"/api/courses?user_id=" + std::to_wstring(g_UserId);
     std::string res = SendRequest(url, "GET", "");
 
@@ -368,7 +419,7 @@ void ApiFetchCourses() {
         auto jArr = json::parse(res);
         if (jArr.is_array()) {
             std::vector<Course> tempCourses;
-            for (auto &it : jArr) {
+            for (auto &it: jArr) {
                 Course c;
                 c.id = it.value("id", 0);
                 c.courseName = ToWide(it.value("course_name", "未知课程"));
@@ -382,16 +433,17 @@ void ApiFetchCourses() {
                     c.lessonType = ToWide(it.value("lesson_type", ""));
                 }
                 tempCourses.push_back(c);
+            } {
+                std::lock_guard<std::recursive_mutex> l(g_DataMutex);
+                g_Courses = tempCourses;
             }
 
-            std::lock_guard<std::recursive_mutex> l(g_DataMutex);
-            g_Courses = tempCourses;
+            // 🚀 拉取成功后立刻写入本地文件持久化缓存
+            SaveLocalCourses();
 
-            LogMessage(L"课程表拉取成功! 共 " + std::to_wstring(tempCourses.size()) + L" 节课");
-
-            if (g_hWidgetWnd) {
+            LogMessage(L"课程表拉取并缓存成功! 共 " + std::to_wstring(tempCourses.size()) + L" 节课");
+            if (g_hWidgetWnd)
                 PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
-            }
         } else if (jArr.is_object() && jArr.contains("error")) {
             LogMessage(L"课程表拉取被拒绝: " + ToWide(jArr["error"].get<std::string>()));
         }

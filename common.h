@@ -68,6 +68,7 @@ struct Course {
     int weekday;
     int weekIndex;
     std::wstring lessonType;
+    std::wstring date;
 };
 
 struct AppUsageRecord {
