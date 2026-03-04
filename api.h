@@ -21,5 +21,8 @@ void ApiDeleteCountdown(int id);
 // 同步屏幕时间
 std::map<std::wstring, int> ApiSyncScreenTime(const std::map<std::wstring, int>& localData, const std::wstring& dateStr, const std::wstring& deviceName);
 
+// 同步账号状态
+bool ApiFetchUserStatus();
+
 // 全局同步任务
 void SyncData();
