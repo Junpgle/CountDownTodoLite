@@ -1,10 +1,10 @@
 {
   "version_code": 8,
-  "version_name": "1.4.8",
+  "version_name": "1.6.0",
   "force_update": false,
   "update_info": {
-    "title": "版本更新 1.4.8",
-    "description": "与手机端同步了待办显示逻辑",
+    "title": "版本更新 1.6.0",
+    "description": "新增课表，优化界面，修复已知bug",
     "full_package_url": "https://gitee.com/Junpgle/CountdownTodo/releases/download/%E6%9C%80%E6%96%B0release/MathQuizLite.exe"
   }
 }
