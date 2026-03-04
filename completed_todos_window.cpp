@@ -18,11 +18,6 @@ static int g_CompScrollY = 0;
 static int g_CompMaxScrollY = 0;
 static std::vector<CompHitZone> g_CompHitZones;
 
-// 外部引用
-extern void SyncData();
-extern std::vector<Todo> g_Todos;
-extern std::recursive_mutex g_DataMutex;
-// 注意：移除了 extern int S(int v); 因为 S(x) 是在 common.h 定义的宏
 
 // 辅助：绘制圆角矩形路径
 static void AddRoundedRectToPath_Comp(GraphicsPath& path, RectF rect, REAL radius) {

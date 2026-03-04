@@ -6,7 +6,7 @@ add_compile_definitions(UNICODE _UNICODE)
 
 add_executable(MathQuizLite
         main.cpp
-        globals.cpp
+        common.cpp
         utils.cpp
         api.cpp
         ui.cpp

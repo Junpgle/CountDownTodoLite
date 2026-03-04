@@ -160,6 +160,14 @@ void CheckForUpdates(bool isManual = false) {
 
 
 int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
+
+    // 🚀 强制显示控制台用于调试
+    AllocConsole();
+    freopen("CONOUT$", "w", stdout);
+    // 如果需要看到 std::wcout 还需要这一行：
+    std::locale::global(std::locale(""));
+
+
     g_hInst = hI;
 
     // 初始化 DPI 适配

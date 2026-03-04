@@ -1,5 +1,6 @@
 #include "common.h"
 
+// 所有的全局变量在这里分配实际内存并初始化
 const std::wstring API_HOST = L"mathquiz.junpgle.me";
 const std::wstring SETTINGS_FILE = L"math_quiz_lite.ini";
 const wchar_t *APP_NAME = L"MathQuizLite";
@@ -16,11 +17,19 @@ float g_Scale = 1.0f;
 BYTE g_BgAlpha = 100;
 int g_TopAppsCount = 3;
 
-// 全局状态变量定义
+// 同步与账户状态
+int g_SyncLimit = 50;
+int g_SyncCount = 0;
+int g_SyncInterval = 0;
+bool g_AutoLogin = false;
+std::wstring g_UserTier = L"free"; // 补齐 api.cpp 之前定义的变量
+
+// 系统状态
 bool g_LoginSuccess = false;
 std::wstring g_TaiDbPath;
 std::wstring g_DeviceName;
 
+// 数据列表
 std::vector<Todo> g_Todos;
 std::vector<Countdown> g_Countdowns;
 std::vector<HitZone> g_HitZones;
@@ -29,6 +38,6 @@ std::vector<AppUsageRecord> g_AppUsage;
 namespace InputState {
     std::wstring result1;
     std::wstring result2;
-    std::wstring result3; // 必须在此定义，以匹配 common.h 中的 extern 声明
+    std::wstring result3;
     bool isOk = false;
 }
