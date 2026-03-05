@@ -3,6 +3,8 @@
 #include "api.h"
 #include "ui.h"
 #include "tai_reader.h"
+// 引入资源头文件
+#include "resource.h"
 #include <thread>
 #include <shellapi.h>
 #include <winhttp.h>
@@ -13,7 +15,35 @@ using json = nlohmann::json;
 
 #pragma comment(lib, "winhttp.lib")
 
+// =========================================================
+// 🚀 字体相关全局变量与函数 (现已改用系统默认字体：微软雅黑)
+// =========================================================
+// 保留变量名以防其它文件 (如 ui.cpp) 报错，但实际使用的是微软雅黑
+Gdiplus::FontFamily* g_MiSansFamily = nullptr;
+
+void InitCustomFont() {
+    // 放弃使用不稳定的内存字体，直接使用系统自带的微软雅黑
+    g_MiSansFamily = new Gdiplus::FontFamily(L"Microsoft YaHei");
+
+    // 容错降级检查：如果用户的精简版系统连微软雅黑都没有，回退到黑体
+    if (g_MiSansFamily->GetLastStatus() != Gdiplus::Ok) {
+        delete g_MiSansFamily;
+        g_MiSansFamily = new Gdiplus::FontFamily(L"SimHei");
+    }
+}
+
+void CleanupCustomFont() {
+    // 清理 GDI+ 字体资源
+    if (g_MiSansFamily) {
+        delete g_MiSansFamily;
+        g_MiSansFamily = nullptr;
+    }
+}
+
+
+// =========================================================
 // --- 自动更新模块 ---
+// =========================================================
 // 当前内部版本号（每次发布新版本时递增，必须与服务器端 manifest 中的 version_code 对应）
 const int CURRENT_VERSION_CODE = 9;
 
@@ -102,8 +132,8 @@ void CheckForUpdates(bool isManual = false) {
                         }
 
                         std::wstring title = L"发现新版本";
-                        std::wstring desc = L"";
-                        std::wstring url = L"";
+                        std::wstring desc;
+                        std::wstring url;
 
                         if (j.contains("update_info") && j["update_info"].is_object()) {
                             auto& info = j["update_info"];
@@ -173,12 +203,16 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
     ULONG_PTR gt;
     Gdiplus::GdiplusStartup(&gt, &gsi, NULL);
 
+    // 🚀 在 GDI+ 初始化后，立刻加载我们的系统字体
+    InitCustomFont();
+
     // 加载用户设置
     LoadSettings();
 
     // 尝试执行自动登录逻辑
     if (!AttemptAutoLogin()) {
         if (!ShowLogin()) {
+            CleanupCustomFont(); // 退出前清理
             Gdiplus::GdiplusShutdown(gt);
             return 0;
         }
@@ -209,7 +243,7 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
         UpdateWindow(g_hWidgetWnd);
         ResizeWidget();
 
-        // --- 修复：程序启动时立即进行一次云端数据同步 ---
+        // --- 程序启动时立即进行一次云端数据同步 ---
         std::thread([]() {
             // 稍作延迟确保窗口句柄已经完全准备好接收刷新消息
             Sleep(500);
@@ -229,6 +263,10 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
 
     // 退出资源清理
     StopTaiReader();
+
+    // 🚀 在 GDI+ 关闭前，清理字体资源
+    CleanupCustomFont();
+
     Gdiplus::GdiplusShutdown(gt);
 
     return (int) m.wParam;

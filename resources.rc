@@ -1,0 +1,5 @@
+// resources.rc
+#include "resource.h"
+
+// 这里的 "MiSans-Regular.ttf" 替换为你实际的字体文件名
+IDR_FONT_MISANS RCDATA "MiSans-Regular.ttf"

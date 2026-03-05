@@ -39,6 +39,16 @@ extern const std::wstring API_HOST;
 extern const std::wstring SETTINGS_FILE;
 extern const wchar_t *APP_NAME;
 
+#include <gdiplus.h>
+
+// 声明全局字体集合和 FontFamily 指针
+extern Gdiplus::PrivateFontCollection g_FontCollection;
+extern Gdiplus::FontFamily* g_MiSansFamily;
+
+// 初始化函数的声明
+void InitCustomFont();
+void CleanupCustomFont();
+
 // --- 🚀 数据结构定义 ---
 
 struct Todo {

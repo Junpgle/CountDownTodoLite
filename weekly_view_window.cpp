@@ -141,11 +141,18 @@ static void RenderWeeklyView(HWND hWnd) {
         float controlHeight = S(50);
         float headerHeight = S(50);
 
-        FontFamily ff(L"MiSans");
-        Font fontBold(&ff, (REAL)S(16), FontStyleBold, UnitPixel);
-        Font fontNormal(&ff, (REAL)S(14), FontStyleRegular, UnitPixel);
-        Font fontSmall(&ff, (REAL)S(13), FontStyleRegular, UnitPixel);
-        Font fontTiny(&ff, (REAL)S(11), FontStyleRegular, UnitPixel);
+
+        FontFamily* pFF = g_MiSansFamily;
+        FontFamily fallbackFF(L"Microsoft YaHei");
+        if (!pFF || pFF->GetLastStatus() != Ok) {
+            pFF = &fallbackFF;
+        }
+
+        Font fontBold(pFF, static_cast<REAL>(S(16)), FontStyleBold, UnitPixel);
+        Font fontNormal(pFF, (REAL)S(14), FontStyleRegular, UnitPixel);
+        Font fontSmall(pFF, (REAL)S(13), FontStyleRegular, UnitPixel);
+        Font fontTiny(pFF, (REAL)S(11), FontStyleRegular, UnitPixel);
+
 
         SolidBrush textBrush(Color(255, 50, 50, 50));
         SolidBrush lightTextBrush(Color(255, 120, 120, 120));
@@ -307,7 +314,7 @@ static void RenderWeeklyView(HWND hWnd) {
                 sf.SetTrimming(StringTrimmingEllipsisCharacter);
 
                 SolidBrush txtColor(Color(255, 255, 255, 255));
-                Font fPill(&ff, (REAL)S(11), allDone ? FontStyleStrikeout : FontStyleRegular, UnitPixel);
+                Font fPill(pFF, (REAL)S(11), allDone ? FontStyleStrikeout : FontStyleRegular, UnitPixel);
                 g.DrawString(txt.c_str(), -1, &fPill, pillRect, &sf, &txtColor);
 
                 s_ControlsZones.push_back({pillRect, 100 + i}); // 绝对坐标命中
@@ -404,7 +411,7 @@ static void RenderWeeklyView(HWND hWnd) {
 
                     StringFormat ellipsisFmt;
                     ellipsisFmt.SetTrimming(StringTrimmingEllipsisCharacter);
-                    Font fSmallStrike(&ff, (REAL)S(11), todo.isDone ? FontStyleStrikeout : FontStyleBold, UnitPixel);
+                    Font fSmallStrike(pFF, (REAL)S(11), todo.isDone ? FontStyleStrikeout : FontStyleBold, UnitPixel);
 
                     std::wstring mark = todo.isDone ? L"[✅] " : L"[⏳] ";
                     g.DrawString((mark + todo.content).c_str(), -1, &fSmallStrike, RectF(rect.X + 2, rect.Y + 2, rect.Width - 4, rect.Height - 4), &ellipsisFmt, &todoTextBrush);

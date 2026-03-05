@@ -186,7 +186,8 @@ void RenderWidget() {
         SolidBrush bgBrush(Color(g_BgAlpha, 25, 25, 25));
         g.FillPath(&bgBrush, &path);
 
-        FontFamily ff(L"MiSans");
+        // --- 修改点：将 MiSans 替换为 Microsoft YaHei ---
+        FontFamily ff(L"Microsoft YaHei");
         Font titleF(&ff, (REAL) S(16), FontStyleBold, UnitPixel);
         Font headF(&ff, (REAL) S(12), FontStyleRegular, UnitPixel);
         Font contentF(&ff, (REAL) S(14), FontStyleRegular, UnitPixel);

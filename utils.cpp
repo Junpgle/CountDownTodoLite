@@ -1,4 +1,22 @@
 #include "utils.h"
+#include "common.h"
+#include "resource.h"
+
+// 补充标准库和 Windows API 依赖头文件，防止编译报错
+#include <windows.h>
+#include <shlwapi.h>
+#include <dpapi.h>
+#include <gdiplus.h>
+#include <string>
+#include <vector>
+#include <ctime>
+#include <cmath>
+#include <sstream>
+#include <iomanip>
+
+// 自动链接必要的 Windows 静态库
+#pragma comment(lib, "Crypt32.lib")
+#pragma comment(lib, "Shlwapi.lib")
 
 std::string ToUtf8(const std::wstring &w) {
     if (w.empty()) return "";
@@ -20,7 +38,9 @@ time_t ParseSqlTime(const std::string &s) {
     if (s.empty()) return 0;
     int y, m, d, H, M, S_time;
     if (sscanf(s.c_str(), "%d-%d-%d %d:%d:%d", &y, &m, &d, &H, &M, &S_time) != 6) {
-        if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%d", &y, &m, &d, &H, &M, &S_time) != 6) return std::time(nullptr);
+        if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%d", &y, &m, &d, &H, &M, &S_time) != 6) {
+            return std::time(nullptr);
+        }
     }
     std::tm tm = {0};
     tm.tm_year = y - 1900;
@@ -56,8 +76,9 @@ std::wstring EncryptString(const std::wstring &input) {
     DATA_BLOB DataOut;
     if (CryptProtectData(&DataIn, L"MathQuizPwd", NULL, NULL, NULL, 0, &DataOut)) {
         std::wstringstream ss;
-        for (DWORD i = 0; i < DataOut.cbData; ++i)
+        for (DWORD i = 0; i < DataOut.cbData; ++i) {
             ss << std::hex << std::setw(2) << std::setfill(L'0') << (int) DataOut.pbData[i];
+        }
         LocalFree(DataOut.pbData);
         return ss.str();
     }
@@ -67,8 +88,9 @@ std::wstring EncryptString(const std::wstring &input) {
 std::wstring DecryptString(const std::wstring &hexInput) {
     if (hexInput.empty()) return L"";
     std::vector<BYTE> binary;
-    for (size_t i = 0; i < hexInput.length(); i += 2) binary.push_back(
-        (BYTE) wcstol(hexInput.substr(i, 2).c_str(), NULL, 16));
+    for (size_t i = 0; i < hexInput.length(); i += 2) {
+        binary.push_back((BYTE) wcstol(hexInput.substr(i, 2).c_str(), NULL, 16));
+    }
     DATA_BLOB DataIn = {(DWORD) binary.size(), binary.data()};
     DATA_BLOB DataOut;
     if (CryptUnprotectData(&DataIn, NULL, NULL, NULL, NULL, 0, &DataOut)) {
@@ -86,7 +108,9 @@ void SetAutoStart(bool enable) {
             WCHAR path[MAX_PATH];
             GetModuleFileNameW(NULL, path, MAX_PATH);
             RegSetValueExW(hKey, APP_NAME, 0, REG_SZ, (BYTE *) path, (lstrlenW(path) + 1) * sizeof(WCHAR));
-        } else RegDeleteValueW(hKey, APP_NAME);
+        } else {
+            RegDeleteValueW(hKey, APP_NAME);
+        }
         RegCloseKey(hKey);
     }
 }
@@ -106,6 +130,7 @@ void LoadSettings() {
     GetModuleFileNameW(NULL, path, MAX_PATH);
     PathRemoveFileSpecW(path);
     PathAppendW(path, SETTINGS_FILE.c_str());
+
     g_UserId = GetPrivateProfileIntW(L"Auth", L"UserId", 0, path);
     g_BgAlpha = GetPrivateProfileIntW(L"Settings", L"BgAlpha", 100, path);
 
@@ -115,8 +140,10 @@ void LoadSettings() {
     WCHAR buf[256];
     GetPrivateProfileStringW(L"Auth", L"Username", L"", buf, 256, path);
     g_Username = buf;
+
     GetPrivateProfileStringW(L"Auth", L"Email", L"", buf, 256, path);
     g_SavedEmail = buf;
+
     WCHAR pass[1024];
     GetPrivateProfileStringW(L"Auth", L"Pass", L"", pass, 1024, path);
     g_SavedPass = DecryptString(pass);
@@ -142,11 +169,16 @@ void SaveSettings(int uid, const std::wstring &name, const std::wstring &email, 
     GetModuleFileNameW(NULL, path, MAX_PATH);
     PathRemoveFileSpecW(path);
     PathAppendW(path, SETTINGS_FILE.c_str());
+
     WritePrivateProfileStringW(L"Auth", L"UserId", std::to_wstring(uid).c_str(), path);
     WritePrivateProfileStringW(L"Auth", L"Username", name.c_str(), path);
     WritePrivateProfileStringW(L"Auth", L"Email", email.c_str(), path);
-    if (savePass) WritePrivateProfileStringW(L"Auth", L"Pass", EncryptString(pass).c_str(), path);
-    else WritePrivateProfileStringW(L"Auth", L"Pass", NULL, path);
+
+    if (savePass) {
+        WritePrivateProfileStringW(L"Auth", L"Pass", EncryptString(pass).c_str(), path);
+    } else {
+        WritePrivateProfileStringW(L"Auth", L"Pass", NULL, path);
+    }
 
     // 🚀 同时同步保存同步频率
     WritePrivateProfileStringW(L"Auth", L"SyncInterval", std::to_wstring(g_SyncInterval).c_str(), path);
@@ -157,6 +189,7 @@ void SaveAlphaSetting() {
     GetModuleFileNameW(NULL, path, MAX_PATH);
     PathRemoveFileSpecW(path);
     PathAppendW(path, SETTINGS_FILE.c_str());
+
     WritePrivateProfileStringW(L"Settings", L"BgAlpha", std::to_wstring(g_BgAlpha).c_str(), path);
     WritePrivateProfileStringW(L"Settings", L"TopAppsCount", std::to_wstring(g_TopAppsCount).c_str(), path);
 }
@@ -166,12 +199,14 @@ void SaveTaiDbPathSetting() {
     GetModuleFileNameW(NULL, path, MAX_PATH);
     PathRemoveFileSpecW(path);
     PathAppendW(path, SETTINGS_FILE.c_str());
+
     WritePrivateProfileStringW(L"Settings", L"TaiDbPath", g_TaiDbPath.c_str(), path);
 }
 
 HFONT GetMiSansFont(int s) {
-    return CreateFontW(S(s), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"MiSans");
+    return CreateFontW(S(s), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
 }
+
 
 // 新增获取今日日期的工具函数
 std::wstring GetTodayDate() {
