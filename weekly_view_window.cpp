@@ -19,11 +19,9 @@ extern void LoadLocalCourses();
 
 // --- 内部状态 ---
 static HWND s_hWeeklyWnd = NULL;
-static int s_ScrollY = 0;
-static int s_MaxScrollY = 0;
 static int s_CurrentWeekIndex = 1;
 static int s_CurrentWeekOffset = 0;
-static int s_ViewMode = 0;
+static int s_ViewMode = 0; // 0: 混合查看, 1: 只看课表, 2: 只看待办
 static bool s_LocalCoursesLoaded = false;
 
 // 交互区域记录
@@ -109,62 +107,11 @@ static void AddRoundRect(GraphicsPath& path, const RectF& r, float radius) {
     path.CloseFigure();
 }
 
-// 🚀 核心重构：匹配超大号字体的 Y 轴偏移量计算
-static float GetYOffsetByTime(int hour, int minute, int viewMode) {
+// 🚀 核心时间映射函数 (彻底干掉滚动，采用动态压缩线性映射)
+static float GetYOffsetByTime(int hour, int minute, float minuteHeight) {
     if (hour < 8) return 0.0f;
-
-    // 再次放大网格基础高度，适配更清晰的展示
-    float cellHeight = S(80);
-    float breakHeight = S(30);
-    float shortBreakHeight = (viewMode == 1) ? 0.0f : S(15);
-
-    float maxPossibleY = 11 * cellHeight + 2 * breakHeight + 8 * shortBreakHeight;
-    if (hour >= 22) return maxPossibleY;
-
-    int totalMins = (hour - 8) * 60 + minute;
-    float yOffset = 0.0f;
-
-    if (totalMins <= 240) {
-        if (totalMins <= 50) return (totalMins / 50.0f) * cellHeight;
-        else if (totalMins <= 60) return cellHeight + ((totalMins - 50) / 10.0f) * shortBreakHeight;
-        else if (totalMins <= 110) return cellHeight + shortBreakHeight + ((totalMins - 60) / 50.0f) * cellHeight;
-        else if (totalMins <= 130) return 2 * cellHeight + shortBreakHeight + ((totalMins - 110) / 20.0f) * shortBreakHeight;
-        else if (totalMins <= 180) return 2 * cellHeight + 2 * shortBreakHeight + ((totalMins - 130) / 50.0f) * cellHeight;
-        else if (totalMins <= 190) return 3 * cellHeight + 2 * shortBreakHeight + ((totalMins - 180) / 10.0f) * shortBreakHeight;
-        else return 3 * cellHeight + 3 * shortBreakHeight + ((totalMins - 190) / 50.0f) * cellHeight;
-    }
-    yOffset = 4 * cellHeight + 3 * shortBreakHeight;
-
-    int minsAfterNoon = totalMins - 240;
-    if (minsAfterNoon <= 120) return yOffset + (minsAfterNoon / 120.0f) * breakHeight;
-    yOffset += breakHeight;
-
-    int minsAfter2PM = totalMins - 360;
-    if (minsAfter2PM <= 230) {
-        if (minsAfter2PM <= 50) return yOffset + (minsAfter2PM / 50.0f) * cellHeight;
-        else if (minsAfter2PM <= 60) return yOffset + cellHeight + ((minsAfter2PM - 50) / 10.0f) * shortBreakHeight;
-        else if (minsAfter2PM <= 110) return yOffset + cellHeight + shortBreakHeight + ((minsAfter2PM - 60) / 50.0f) * cellHeight;
-        else if (minsAfter2PM <= 120) return yOffset + 2 * cellHeight + shortBreakHeight + ((minsAfter2PM - 110) / 10.0f) * shortBreakHeight;
-        else if (minsAfter2PM <= 170) return yOffset + 2 * cellHeight + 2 * shortBreakHeight + ((minsAfter2PM - 120) / 50.0f) * cellHeight;
-        else if (minsAfter2PM <= 180) return yOffset + 3 * cellHeight + 2 * shortBreakHeight + ((minsAfter2PM - 170) / 10.0f) * shortBreakHeight;
-        else return yOffset + 3 * cellHeight + 3 * shortBreakHeight + ((minsAfter2PM - 180) / 50.0f) * cellHeight;
-    }
-    yOffset += 4 * cellHeight + 3 * shortBreakHeight;
-
-    int minsAfterAfternoon = totalMins - 590;
-    if (minsAfterAfternoon <= 70) return yOffset + (minsAfterAfternoon / 70.0f) * breakHeight;
-    yOffset += breakHeight;
-
-    int minsAfter7PM = totalMins - 660;
-    if (minsAfter7PM <= 170) {
-        if (minsAfter7PM <= 50) return yOffset + (minsAfter7PM / 50.0f) * cellHeight;
-        else if (minsAfter7PM <= 60) return yOffset + cellHeight + ((minsAfter7PM - 50) / 10.0f) * shortBreakHeight;
-        else if (minsAfter7PM <= 110) return yOffset + cellHeight + shortBreakHeight + ((minsAfter7PM - 60) / 50.0f) * cellHeight;
-        else if (minsAfter7PM <= 120) return yOffset + 2 * cellHeight + shortBreakHeight + ((minsAfter7PM - 110) / 10.0f) * shortBreakHeight;
-        else return yOffset + 2 * cellHeight + 2 * shortBreakHeight + ((minsAfter7PM - 120) / 50.0f) * cellHeight;
-    }
-
-    return maxPossibleY;
+    if (hour > 22) return (22 - 8) * 60.0f * minuteHeight;
+    return ((hour - 8) * 60.0f + minute) * minuteHeight;
 }
 
 // 渲染核心
@@ -188,31 +135,29 @@ static void RenderWeeklyView(HWND hWnd) {
 
         s_ControlsZones.clear();
 
-        // 🚀 进一步放大 UI 布局
-        float timeColWidth = S(55);
+        // 🚀 UI 参数配置
+        float timeColWidth = S(55); // 左侧时间栏宽度
         float cellWidth = (width - timeColWidth) / 7.0f;
         float controlHeight = S(50);
         float headerHeight = S(50);
 
-        float cellH = S(80); // 行高加到80
-        float breakH = S(30);
-        float shortBreakH = (s_ViewMode == 1) ? 0.0f : S(15);
-        float totalGridHeight = 11 * cellH + 2 * breakH + 8 * shortBreakH;
-
-        // 🚀 字号继续拔高
         FontFamily ff(L"MiSans");
-        Font fontBold(&ff, (REAL)S(15), FontStyleBold, UnitPixel);      // 原 14
-        Font fontNormal(&ff, (REAL)S(14), FontStyleRegular, UnitPixel); // 原 13
-        Font fontSmall(&ff, (REAL)S(13), FontStyleRegular, UnitPixel);  // 原 12
-        Font fontTiny(&ff, (REAL)S(12), FontStyleRegular, UnitPixel);   // 原 11
+        Font fontBold(&ff, (REAL)S(16), FontStyleBold, UnitPixel);
+        Font fontNormal(&ff, (REAL)S(14), FontStyleRegular, UnitPixel);
+        Font fontSmall(&ff, (REAL)S(13), FontStyleRegular, UnitPixel);
+        Font fontTiny(&ff, (REAL)S(11), FontStyleRegular, UnitPixel);
 
         SolidBrush textBrush(Color(255, 50, 50, 50));
         SolidBrush lightTextBrush(Color(255, 120, 120, 120));
-        Pen linePen(Color(255, 220, 220, 220), 1.0f);
+        Pen linePen(Color(255, 225, 225, 225), 1.0f);
 
         StringFormat fmtCenter;
         fmtCenter.SetAlignment(StringAlignmentCenter);
         fmtCenter.SetLineAlignment(StringAlignmentCenter);
+
+        StringFormat fmtCenterTop;
+        fmtCenterTop.SetAlignment(StringAlignmentCenter);
+        fmtCenterTop.SetLineAlignment(StringAlignmentNear);
 
         // --- 0. 解析日期与区分全天/日内待办 ---
         time_t nowTime = time(nullptr);
@@ -265,18 +210,13 @@ static void RenderWeeklyView(HWND hWnd) {
             }
         }
 
-        float allDayBannerHeight = (hasAnyAllDay && s_ViewMode != 1) ? S(35) : 0.0f; // 置顶高度同步拉高
+        float allDayBannerHeight = (hasAnyAllDay && s_ViewMode != 1) ? S(25) : 0.0f;
         float fixedTotalHeight = controlHeight + headerHeight + allDayBannerHeight;
 
-        // 更新滚动条参数
-        s_MaxScrollY = (int)(totalGridHeight + fixedTotalHeight - height + S(20));
-        if (s_MaxScrollY < 0) s_MaxScrollY = 0;
-        if (s_ScrollY > s_MaxScrollY) s_ScrollY = s_MaxScrollY;
-
-        SCROLLINFO si = { sizeof(si), SIF_RANGE | SIF_PAGE | SIF_POS };
-        si.nMin = 0; si.nMax = (int)(totalGridHeight + fixedTotalHeight + S(20));
-        si.nPage = height; si.nPos = s_ScrollY;
-        SetScrollInfo(hWnd, SB_VERT, &si, TRUE);
+        // 🚀 核心自适应逻辑：计算每分钟占用的像素高度
+        float availableHeight = height - fixedTotalHeight;
+        if (availableHeight < 0) availableHeight = 1.0f;
+        float minuteHeight = availableHeight / ((22 - 8) * 60.0f);
 
 
         // --- 1. 绘制顶部控制栏 ---
@@ -325,9 +265,15 @@ static void RenderWeeklyView(HWND hWnd) {
             wchar_t dateBuf[32]; swprintf_s(dateBuf, L"%d/%02d", dt.tm_mon + 1, dt.tm_mday);
 
             float x = timeColWidth + i * cellWidth;
-            StringFormat format; format.SetAlignment(StringAlignmentCenter);
-            g.DrawString(weekNames[i], -1, &fontBold, RectF(x, controlHeight + S(8), cellWidth, S(15)), &format, &textBrush);
-            g.DrawString(dateBuf, -1, &fontSmall, RectF(x, controlHeight + S(28), cellWidth, S(15)), &format, &lightTextBrush);
+            bool isToday = (dayT == todayStart);
+
+            SolidBrush* headerBrush = isToday ? new SolidBrush(Color(255, 33, 150, 243)) : &textBrush;
+            SolidBrush* subHeaderBrush = isToday ? new SolidBrush(Color(255, 100, 181, 246)) : &lightTextBrush;
+
+            g.DrawString(weekNames[i], -1, &fontBold, RectF(x, controlHeight + S(6), cellWidth, S(18)), &fmtCenter, headerBrush);
+            g.DrawString(dateBuf, -1, &fontSmall, RectF(x, controlHeight + S(26), cellWidth, S(16)), &fmtCenter, subHeaderBrush);
+
+            if (isToday) { delete headerBrush; delete subHeaderBrush; }
         }
 
         // --- 3. 绘制全天/跨天事件置顶横幅 ---
@@ -343,14 +289,14 @@ static void RenderWeeklyView(HWND hWnd) {
                 }
 
                 float px = timeColWidth + i * cellWidth + S(2);
-                float py = controlHeight + headerHeight + S(2);
+                float py = controlHeight + headerHeight + S(1);
                 float pw = cellWidth - S(4);
-                float ph = allDayBannerHeight - S(6);
+                float ph = allDayBannerHeight - S(2);
 
                 RectF pillRect(px, py, pw, ph);
                 GraphicsPath path; AddRoundRect(path, pillRect, S(4));
 
-                SolidBrush pillBg(allDone ? Color(128, 76, 175, 80) : Color(220, 255, 152, 0));
+                SolidBrush pillBg(allDone ? Color(128, 76, 175, 80) : Color(216, 255, 193, 7)); // 琥珀黄 / 绿色
                 g.FillPath(&pillBg, &path);
 
                 std::wstring txt = allDayTodos[i].size() == 1 ? allDayTodos[i][0].todo.content : (std::to_wstring(allDayTodos[i].size()) + L"项全天");
@@ -361,109 +307,35 @@ static void RenderWeeklyView(HWND hWnd) {
                 sf.SetTrimming(StringTrimmingEllipsisCharacter);
 
                 SolidBrush txtColor(Color(255, 255, 255, 255));
-                Font fPill(&ff, (REAL)S(12), allDone ? FontStyleStrikeout : FontStyleRegular, UnitPixel);
+                Font fPill(&ff, (REAL)S(11), allDone ? FontStyleStrikeout : FontStyleRegular, UnitPixel);
                 g.DrawString(txt.c_str(), -1, &fPill, pillRect, &sf, &txtColor);
 
-                // 给这些大胶囊增加交互
-                s_ControlsZones.push_back({pillRect, 100 + i});
+                s_ControlsZones.push_back({pillRect, 100 + i}); // 绝对坐标命中
             }
         }
         g.DrawLine(&linePen, 0.0f, fixedTotalHeight, (float)width, fixedTotalHeight);
 
-        // --- 开始裁剪与滚动偏移 (针对网格内容) ---
-        g.SetClip(RectF(0, fixedTotalHeight, (float)width, (float)height - fixedTotalHeight));
-        g.TranslateTransform(0, fixedTotalHeight - s_ScrollY);
+        // --- 偏移画笔开始绘制下方网格 ---
+        g.TranslateTransform(0, fixedTotalHeight);
 
-        // --- 4. 绘制时间网格背景 ---
-        float currentY = 0.0f;
-        const wchar_t* periodTimes[] = {L"08:00\n08:50", L"09:00\n09:50", L"10:10\n11:00", L"11:10\n12:00",
-                                        L"14:00\n14:50", L"15:00\n15:50", L"16:00\n16:50", L"17:00\n17:50",
-                                        L"19:00\n19:50", L"20:00\n20:50", L"21:00\n21:50"};
-
-        SolidBrush breakBgBrush(Color(255, 240, 240, 240));
-        SolidBrush shortBreakBgBrush(Color(255, 248, 248, 248));
-
-        for (int i = 1; i <= 11; i++) {
-            g.DrawLine(&linePen, 0.0f, currentY + cellH, (float)width, currentY + cellH);
-
-            wchar_t numBuf[8]; swprintf_s(numBuf, L"%d", i);
-            g.DrawString(numBuf, -1, &fontBold, RectF(0, currentY + S(15), timeColWidth, S(20)), &fmtCenter, &textBrush);
-            g.DrawString(periodTimes[i-1], -1, &fontSmall, RectF(0, currentY + S(38), timeColWidth, S(35)), &fmtCenter, &lightTextBrush); // 拉长 Y 轴
-
-            currentY += cellH;
-
-            if (i == 4) {
-                g.FillRectangle(&breakBgBrush, 0.0f, currentY, (float)width, breakH);
-                g.DrawString(L"午休", -1, &fontSmall, RectF(0, currentY, (float)width, breakH), &fmtCenter, &lightTextBrush);
-                currentY += breakH;
-            } else if (i == 8) {
-                g.FillRectangle(&breakBgBrush, 0.0f, currentY, (float)width, breakH);
-                g.DrawString(L"晚休", -1, &fontSmall, RectF(0, currentY, (float)width, breakH), &fmtCenter, &lightTextBrush);
-                currentY += breakH;
-            } else if (i != 11 && shortBreakH > 0) {
-                g.FillRectangle(&shortBreakBgBrush, 0.0f, currentY, (float)width, shortBreakH);
-                currentY += shortBreakH;
+        // --- 4. 绘制横向时间线 (整点线) 和垂直线 ---
+        for (int hour = 8; hour <= 22; hour++) {
+            float y = GetYOffsetByTime(hour, 0, minuteHeight);
+            g.DrawLine(&linePen, timeColWidth, y, (float)width, y);
+            if (hour < 22) {
+                wchar_t numBuf[16]; swprintf_s(numBuf, L"%02d:00", hour);
+                g.DrawString(numBuf, -1, &fontSmall, RectF(0, y + S(2), timeColWidth, 60 * minuteHeight), &fmtCenterTop, &textBrush);
             }
         }
 
         for (int i = 0; i <= 7; i++) {
-            g.DrawLine(&linePen, timeColWidth + i * cellWidth, 0.0f, timeColWidth + i * cellWidth, totalGridHeight);
+            g.DrawLine(&linePen, timeColWidth + i * cellWidth, 0.0f, timeColWidth + i * cellWidth, availableHeight);
         }
 
         std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
         std::map<std::wstring, int> collisionMap;
 
-        // --- 5. 绘制真实课程表 ---
-        if (s_ViewMode != 2) {
-            std::map<std::wstring, bool> drawnCourses;
-            for (size_t k = 0; k < g_Courses.size(); ++k) {
-                const auto& course = g_Courses[k];
-                if (course.weekIndex != s_CurrentWeekIndex) continue;
-
-                std::wstring cKey = std::to_wstring(course.weekday) + L"_" + std::to_wstring(course.startTime) + L"_" + course.courseName;
-                if (drawnCourses[cKey]) continue;
-                drawnCourses[cKey] = true;
-
-                int startHour = course.startTime / 100;
-                int startMin = course.startTime % 100;
-                int endHour = course.endTime / 100;
-                int endMin = course.endTime % 100;
-
-                float top = GetYOffsetByTime(startHour, startMin, s_ViewMode);
-                float bottom = GetYOffsetByTime(endHour, endMin, s_ViewMode);
-                float height = bottom - top;
-                if (height < cellH / 2.0f) height = cellH / 2.0f;
-
-                float finalLeft = timeColWidth + (course.weekday - 1) * cellWidth + 2.0f;
-                float finalWidth = cellWidth - 4.0f;
-
-                RectF rect(finalLeft, top + 2.0f, finalWidth, height - 4.0f);
-                GraphicsPath path; AddRoundRect(path, rect, S(6));
-
-                SolidBrush bg(GetCourseColor(course.courseName));
-                g.FillPath(&bg, &path);
-
-                SolidBrush whiteBrush(Color(255, 255, 255, 255));
-                StringFormat textFmt;
-                textFmt.SetTrimming(StringTrimmingEllipsisCharacter);
-
-                std::wstring dispText = course.courseName;
-                if (!course.roomName.empty() && course.roomName != L"未知教室") {
-                    if (height > cellH * 1.5f) {
-                        dispText += L"\n@" + course.roomName;
-                    } else {
-                        dispText += L" @" + course.roomName;
-                    }
-                }
-
-                RectF textRect(rect.X + 4, rect.Y + 4, rect.Width - 8, rect.Height - 8);
-                g.DrawString(dispText.c_str(), -1, &fontTiny, textRect, &textFmt, &whiteBrush);
-
-                s_ControlsZones.push_back({rect, 2000 + (int)k});
-            }
-        }
-
-        // --- 6. 🚀 绘制网格日内待办事项 ---
+        // --- 5. 绘制待办事项 (混合模式靠右) ---
         if (s_ViewMode != 1) {
             SolidBrush todoTextBrush(Color(255, 255, 255, 255));
 
@@ -496,26 +368,33 @@ static void RenderWeeklyView(HWND hWnd) {
                         renderEndMin = endTm.tm_min;
                     }
 
-                    float top = GetYOffsetByTime(renderStartHour, renderStartMin, s_ViewMode);
-                    float bottom = GetYOffsetByTime(renderEndHour, renderEndMin, s_ViewMode);
+                    float top = GetYOffsetByTime(renderStartHour, renderStartMin, minuteHeight);
+                    float bottom = GetYOffsetByTime(renderEndHour, renderEndMin, minuteHeight);
                     float height = bottom - top;
-                    if (height < cellH / 2.0f) height = cellH / 2.0f;
+                    if (height < S(20)) height = S(20);
 
-                    std::wstring colKey = std::to_wstring(i) + L"_" + std::to_wstring((int)(top / 10));
+                    // 空间防重叠计算
+                    std::wstring colKey = std::to_wstring(i) + L"_" + std::to_wstring((int)(top / S(15)));
                     int stackIdx = collisionMap[colKey]++;
 
-                    float finalLeft = timeColWidth + i * cellWidth + 2.0f;
-                    float finalWidth = cellWidth - 4.0f;
+                    float finalLeft = timeColWidth + i * cellWidth + S(1);
+                    float finalWidth = cellWidth - S(2);
 
-                    if (stackIdx > 0) {
-                        finalLeft += 8.0f * stackIdx;
-                        finalWidth -= 8.0f * stackIdx;
+                    // 🚀 混合模式分栏：待办占右侧 45%
+                    if (s_ViewMode == 0) {
+                        finalWidth = (cellWidth - S(2)) * 0.45f;
+                        finalLeft += (cellWidth - S(2)) * 0.55f;
                     }
 
-                    RectF rect(finalLeft, top + 1.0f, finalWidth, height - 2.0f);
+                    if (stackIdx > 0) {
+                        finalLeft += S(4) * stackIdx;
+                        finalWidth -= S(4) * stackIdx;
+                    }
+
+                    RectF rect(finalLeft, top, finalWidth, height);
                     GraphicsPath path; AddRoundRect(path, rect, S(4));
 
-                    SolidBrush todoBg(todo.isDone ? Color(128, 76, 175, 80) : Color(220, 255, 152, 0));
+                    SolidBrush todoBg(todo.isDone ? Color(128, 76, 175, 80) : Color(216, 255, 193, 7));
                     g.FillPath(&todoBg, &path);
 
                     if (stackIdx > 0) {
@@ -525,13 +404,92 @@ static void RenderWeeklyView(HWND hWnd) {
 
                     StringFormat ellipsisFmt;
                     ellipsisFmt.SetTrimming(StringTrimmingEllipsisCharacter);
-                    Font fSmallStrike(&ff, (REAL)S(12), todo.isDone ? FontStyleStrikeout : FontStyleRegular, UnitPixel);
+                    Font fSmallStrike(&ff, (REAL)S(11), todo.isDone ? FontStyleStrikeout : FontStyleBold, UnitPixel);
 
-                    g.DrawString(todo.content.c_str(), -1, &fSmallStrike, RectF(rect.X + 4, rect.Y + 4, rect.Width - 8, rect.Height - 8), &ellipsisFmt, &todoTextBrush);
+                    std::wstring mark = todo.isDone ? L"[✅] " : L"[⏳] ";
+                    g.DrawString((mark + todo.content).c_str(), -1, &fSmallStrike, RectF(rect.X + 2, rect.Y + 2, rect.Width - 4, rect.Height - 4), &ellipsisFmt, &todoTextBrush);
 
-                    // 🚀 为网格里的待办注册点击区域 (以 3000 为基础)
-                    s_ControlsZones.push_back({rect, 3000 + item.originalIndex});
+                    // 保存绝对屏幕坐标命中区
+                    s_ControlsZones.push_back({RectF(rect.X, rect.Y + fixedTotalHeight, rect.Width, rect.Height), 3000 + item.originalIndex});
                 }
+            }
+        }
+
+        // --- 6. 绘制课程块 (混合模式靠左) ---
+        if (s_ViewMode != 2) {
+            std::map<std::wstring, bool> drawnCourses;
+            for (size_t k = 0; k < g_Courses.size(); ++k) {
+                const auto& course = g_Courses[k];
+                if (course.weekIndex != s_CurrentWeekIndex) continue;
+
+                std::wstring cKey = std::to_wstring(course.weekday) + L"_" + std::to_wstring(course.startTime) + L"_" + course.courseName;
+                if (drawnCourses[cKey]) continue;
+                drawnCourses[cKey] = true;
+
+                int startHour = course.startTime / 100;
+                int startMin = course.startTime % 100;
+                int endHour = course.endTime / 100;
+                int endMin = course.endTime % 100;
+
+                float top = GetYOffsetByTime(startHour, startMin, minuteHeight);
+                float bottom = GetYOffsetByTime(endHour, endMin, minuteHeight);
+                float height = bottom - top;
+
+                float finalLeft = timeColWidth + (course.weekday - 1) * cellWidth + S(1);
+                float courseWidth = cellWidth - S(2);
+
+                // 🚀 混合模式分栏：课程占左侧 55%
+                if (s_ViewMode == 0) {
+                    courseWidth = (cellWidth - S(2)) * 0.55f;
+                }
+
+                RectF rect(finalLeft, top + 1.0f, courseWidth, height - 2.0f);
+                GraphicsPath path; AddRoundRect(path, rect, S(4));
+
+                SolidBrush bg(GetCourseColor(course.courseName));
+                g.FillPath(&bg, &path);
+
+                SolidBrush whiteBrush(Color(255, 255, 255, 255));
+                StringFormat textFmt;
+                textFmt.SetTrimming(StringTrimmingEllipsisCharacter);
+
+                // 智能拼接标签，防溢出
+                std::wstring dispType = course.lessonType;
+                if (dispType == L"EXPERIMENT") dispType = L"实验";
+                else if (dispType == L"THEORY") dispType = L"理论";
+
+                std::wstring dispText = (dispType.empty() ? L"" : (L"[" + dispType + L"] ")) + course.courseName;
+
+                if (!course.roomName.empty() && course.roomName != L"未知教室") {
+                    if (height > S(40)) dispText += L"\n@" + course.roomName;
+                }
+
+                RectF textRect(rect.X + 2, rect.Y + 2, rect.Width - 4, rect.Height - 4);
+                g.DrawString(dispText.c_str(), -1, &fontTiny, textRect, &textFmt, &whiteBrush);
+
+                s_ControlsZones.push_back({RectF(rect.X, rect.Y + fixedTotalHeight, rect.Width, rect.Height), 2000 + (int)k});
+            }
+        }
+
+        // --- 7. 绘制当前时间指示线 ---
+        time_t realNowT = time(nullptr);
+        tm realNowTm; localtime_s(&realNowTm, &realNowT);
+        if (realNowTm.tm_hour >= 8 && realNowTm.tm_hour <= 22) {
+            // 计算当前日期的 0 点
+            time_t todayStartReal = realNowT - (realNowTm.tm_hour * 3600 + realNowTm.tm_min * 60 + realNowTm.tm_sec);
+            int diffDays = (todayStartReal - mondayTime) / 86400;
+
+            if (diffDays >= 0 && diffDays <= 6) {
+                float nowY = GetYOffsetByTime(realNowTm.tm_hour, realNowTm.tm_min, minuteHeight);
+                float lineLeft = timeColWidth + diffDays * cellWidth;
+
+                SolidBrush redBrush(Color(200, 255, 50, 50));
+                Pen redPen(Color(128, 255, 50, 50), 1.0f);
+
+                // 贯穿整行的红线
+                g.DrawLine(&redPen, timeColWidth, nowY, (float)width, nowY);
+                // 当前列的小红点，通过显式转换避免函数重载冲突
+                g.FillEllipse(&redBrush, lineLeft - (float)S(3), nowY - (float)S(3), (float)S(6), (float)S(6));
             }
         }
     }
@@ -558,45 +516,11 @@ static LRESULT CALLBACK WeeklyWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
             int y = HIWORD(lp);
 
             for (const auto& z : s_ControlsZones) {
-                float hitY = (float)y;
-                // 注意：如果 id >= 2000，表示它是随网格滚动的元素，需要加上 ScrollY
-                if (z.id >= 2000) {
-                    hitY += s_ScrollY - (S(50) + S(45) + S(35)); // 对应控制栏+表头+全天胶囊的最大预估高度偏移
-                }
-
-                // 准确命中判定（如果是滚动区域内，要补偿精准的裁剪高度）
-                bool isHit = false;
-                if (z.id >= 2000) {
-                    // 对于跟随滚动的项，其保存的 rect.Y 是从网格最顶端算起的绝对 Y。
-                    // 实际画在屏幕上时经过了 TranslateTransform(0, fixedTotalHeight - ScrollY)
-                    // 所以真实的屏幕 y = rect.Y + fixedTotalHeight - ScrollY
-                    // 所以鼠标的 hitY 应该是：y - fixedTotalHeight + ScrollY
-
-                    float fixedH = S(50) + S(45);
-                    std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
-                    // 简单判断一下是否有全天横幅，恢复精准偏移计算
-                    bool hasAllDay = false;
-                    for (const auto& t : g_Todos) {
-                        if (t.dueDate.find(L"T") != std::wstring::npos || t.dueDate.find(L":59") != std::wstring::npos) hasAllDay = true;
-                    }
-                    if (hasAllDay && s_ViewMode != 1) fixedH += S(35);
-
-                    float preciseHitY = y - fixedH + s_ScrollY;
-                    if (preciseHitY >= z.rect.Y && preciseHitY <= z.rect.Y + z.rect.Height &&
-                        x >= z.rect.X && x <= z.rect.X + z.rect.Width &&
-                        y >= fixedH) { // 必须点在网格区域内才算
-                        isHit = true;
-                    }
-                } else {
-                    // 顶部固定控件
-                    isHit = z.rect.Contains((REAL)x, (REAL)y);
-                }
-
-
-                if (isHit) {
+                // 🚀 因为我们在绘制阶段记录的全部是“绝对屏幕坐标”，这里直接无脑判包含即可！极其安全！
+                if (z.rect.Contains((REAL)x, (REAL)y)) {
 
                     if (z.id >= 3000) {
-                        // 🚀 响应：网格中的局部的普通待办点击
+                        // 待办点击
                         int todoIdx = z.id - 3000;
                         std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
                         if (todoIdx >= 0 && todoIdx < g_Todos.size()) {
@@ -613,7 +537,7 @@ static LRESULT CALLBACK WeeklyWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
                         break;
                     }
                     else if (z.id >= 2000) {
-                        // 🚀 响应：课程点击
+                        // 课程点击
                         int courseIdx = z.id - 2000;
                         std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
                         if (courseIdx >= 0 && courseIdx < g_Courses.size()) {
@@ -625,8 +549,13 @@ static LRESULT CALLBACK WeeklyWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
                             msgStr += L"📍 地点: " + c.roomName + L"\n";
                             msgStr += L"📅 周次: 第 " + std::to_wstring(c.weekIndex) + L" 周，星期" + std::to_wstring(c.weekday) + L"\n";
                             msgStr += L"⏰ 时间: " + FormatTimeHHMM(c.startTime) + L" - " + FormatTimeHHMM(c.endTime) + L"\n";
-                            if (!c.lessonType.empty()) {
-                                msgStr += L"🏷️ 类型: " + (c.lessonType == L"EXPERIMENT" ? L"实验课" : c.lessonType) + L"\n";
+
+                            std::wstring transType = c.lessonType;
+                            if (transType == L"EXPERIMENT") transType = L"实验课";
+                            else if (transType == L"THEORY") transType = L"理论课";
+
+                            if (!transType.empty()) {
+                                msgStr += L"🏷️ 类型: " + transType + L"\n";
                             }
 
                             MessageBoxW(hWnd, msgStr.c_str(), L"课程信息", MB_OK | MB_ICONINFORMATION);
@@ -634,7 +563,7 @@ static LRESULT CALLBACK WeeklyWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
                         break;
                     }
                     else if (z.id >= 100 && z.id < 107) {
-                        // 🚀 响应：全天/跨天置顶胶囊的点击
+                        // 全天胶囊点击
                         int dayOffset = z.id - 100;
 
                         time_t nowTime = time(nullptr);
@@ -715,27 +644,6 @@ static LRESULT CALLBACK WeeklyWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             break;
         }
-        case WM_MOUSEWHEEL: {
-            int zDelta = GET_WHEEL_DELTA_WPARAM(wp);
-            s_ScrollY -= zDelta;
-            if (s_ScrollY < 0) s_ScrollY = 0;
-            if (s_ScrollY > s_MaxScrollY) s_ScrollY = s_MaxScrollY;
-            InvalidateRect(hWnd, NULL, FALSE);
-            break;
-        }
-        case WM_VSCROLL: {
-            switch (LOWORD(wp)) {
-                case SB_LINEUP: s_ScrollY -= 30; break;
-                case SB_LINEDOWN: s_ScrollY += 30; break;
-                case SB_PAGEUP: s_ScrollY -= 150; break;
-                case SB_PAGEDOWN: s_ScrollY += 150; break;
-                case SB_THUMBTRACK: s_ScrollY = HIWORD(wp); break;
-            }
-            if (s_ScrollY < 0) s_ScrollY = 0;
-            if (s_ScrollY > s_MaxScrollY) s_ScrollY = s_MaxScrollY;
-            InvalidateRect(hWnd, NULL, FALSE);
-            break;
-        }
         case WM_SIZE: {
             InvalidateRect(hWnd, NULL, FALSE);
             break;
@@ -767,15 +675,15 @@ void ShowWeeklyViewWindow(HWND parent) {
     wc.lpszClassName = L"WeeklyViewClass";
     RegisterClassW(&wc);
 
-    // 🚀 更宽敞霸气的初始窗口体验
+    // 🚀 更宽敞霸气的初始自适应窗口
     int width = S(1200);
-    int height = S(900);
+    int height = S(850);
     int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - height) / 2;
 
     s_hWeeklyWnd = CreateWindowExW(
-        0, L"WeeklyViewClass", L"课表与待办 (周视图)",
-        (WS_OVERLAPPEDWINDOW | WS_VSCROLL),
+        0, L"WeeklyViewClass", L"课表与待办 (自适应全屏视图)",
+        WS_OVERLAPPEDWINDOW, // 彻底干掉 WS_VSCROLL 滚动条
         x, y, width, height,
         parent, NULL, GetModuleHandle(NULL), NULL
     );
