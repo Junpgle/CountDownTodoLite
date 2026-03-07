@@ -290,11 +290,19 @@ void RenderWidget() {
         g_HitZones.push_back({Rect(width - S(45), (int)y, S(30), S(20)), 0, 1});
         y += S(22);
 
-        // ── 辅助：把 "YYYY-MM-DD HH:MM" 字符串解析为 time_t ──
-        auto parseDate = [](const std::wstring& s, bool endOfDay) -> time_t {
+        // 当前时间 & 今天0点（必须在 parseDate lambda 之前计算）
+        time_t tNow  = time(nullptr);
+        struct tm nowTm; localtime_s(&nowTm, &tNow);
+        nowTm.tm_hour=0; nowTm.tm_min=0; nowTm.tm_sec=0;
+        time_t tTodayStart = mktime(&nowTm);
+        time_t tTodayEnd   = tTodayStart + 86399;
+
+        // ── 辅助：把 "YYYY-MM-DD HH:MM" 字符串解析为 time_t；空字符串返回今天0点 ──
+        auto parseDate = [&tTodayStart](const std::wstring& s, bool endOfDay) -> time_t {
+            if (s.empty()) return endOfDay ? (tTodayStart + 86399) : tTodayStart;
             int yr=0,mo=0,dy=0,hr=0,mn=0;
             int cnt = swscanf(s.c_str(), L"%d-%d-%d %d:%d",&yr,&mo,&dy,&hr,&mn);
-            if (cnt < 3) return 0;
+            if (cnt < 3) return endOfDay ? (tTodayStart + 86399) : tTodayStart;
             struct tm t={};
             t.tm_year=yr-1900; t.tm_mon=mo-1; t.tm_mday=dy;
             if(cnt>=5){t.tm_hour=hr;t.tm_min=mn;}
@@ -303,19 +311,13 @@ void RenderWidget() {
             return mktime(&t);
         };
 
-        // 当前时间 & 今天0点
-        time_t tNow  = time(nullptr);
-        struct tm nowTm; localtime_s(&nowTm, &tNow);
-        nowTm.tm_hour=0; nowTm.tm_min=0; nowTm.tm_sec=0;
-        time_t tTodayStart = mktime(&nowTm);
-        time_t tTodayEnd   = tTodayStart + 86399;
 
         // ── 分桶：过期 / 今日 / 未来 ──
         struct TodoBucket { const Todo* t; time_t dueTime; float progress; };
         std::vector<TodoBucket> pastTodos, todayTodos, futureTodos;
 
         for (const auto& t : g_Todos) {
-            if (t.isDone) continue;
+            if (t.isDone || t.isDeleted) continue;
 
             time_t tDue = t.dueDate.empty() ? 0 : parseDate(t.dueDate, true);
 
@@ -509,7 +511,7 @@ void ResizeWidget() {
 
         int pastCnt=0, todayCnt=0, futureCnt=0;
         for (const auto& t : g_Todos) {
-            if (t.isDone) continue;
+            if (t.isDone || t.isDeleted) continue;
             if (t.dueDate.empty()) { todayCnt++; continue; }
             int yr=0,mo=0,dy=0,hr=0,mn=0;
             swscanf(t.dueDate.c_str(), L"%d-%d-%d %d:%d",&yr,&mo,&dy,&hr,&mn);
@@ -609,19 +611,17 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     else if (z.type == 5) {
                         if (MessageBoxW(hWnd, L"确定要删除这条待办吗？", L"确认删除", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                            // 优先用 uuid 找到真实 id
-                            int realId = z.id;
-                            std::wstring delUuid = z.uuid;
                             {
                                 std::lock_guard<std::recursive_mutex> l(g_DataMutex);
                                 for (auto &t : g_Todos) {
-                                    if ((!delUuid.empty() && t.uuid == delUuid) || t.id == z.id) {
-                                        realId = t.id;
+                                    if ((!z.uuid.empty() && t.uuid == z.uuid) || t.id == z.id) {
+                                        t.isDeleted   = true;
+                                        t.isDirty     = true;
+                                        t.lastUpdated = time(nullptr);
                                         break;
                                     }
                                 }
                             }
-                            ApiDeleteTodo(realId);
                             SyncData();
                         }
                     }

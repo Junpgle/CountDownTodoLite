@@ -5,6 +5,7 @@
 #include <ctime>
 #include <debugapi.h>
 #include <iostream>
+#include <thread>
 #include <shlwapi.h>
 
 #pragma comment(lib, "shlwapi.lib")
@@ -151,7 +152,7 @@ static std::wstring GetDataCachePath() {
 void SaveLocalData() {
     try {
         json root;
-        root["version"]    = 2; // 格式版本号，未来升级格式时用于兼容判断
+        root["version"]    = 3; // v3：添加 is_deleted 和循环字段
         root["saved_at"]   = (long long)time(nullptr) * 1000LL;
         root["user_id"]    = g_UserId;
 
@@ -167,11 +168,16 @@ void SaveLocalData() {
                 j["uuid"]         = ToUtf8(t.uuid);
                 j["content"]      = ToUtf8(t.content);
                 j["is_done"]      = t.isDone;
+                j["is_deleted"]   = t.isDeleted;
                 j["is_dirty"]     = t.isDirty;
                 j["last_updated"] = (long long)t.lastUpdated * 1000LL;
                 // 日期字段：存为 UTC ms 时间戳（0 表示空）
                 j["created_date_ms"] = DateStringToUtcMs(t.createdDate);
                 j["due_date_ms"]     = DateStringToUtcMs(t.dueDate);
+                // 循环字段
+                j["recurrence"]           = t.recurrence;
+                j["custom_interval_days"] = t.customIntervalDays;
+                j["recurrence_end_ms"]    = DateStringToUtcMs(t.recurrenceEndDate);
                 todosArr.push_back(j);
             }
 
@@ -231,10 +237,13 @@ void LoadLocalData() {
     try {
         auto root = json::parse(s);
 
-        // 版本检查：低于 v2 的旧格式直接丢弃（字段不兼容）
+        // 版本检查：低于 v3 的旧格式直接丢弃（字段不兼容）
         int version = root.value("version", 1);
-        if (version < 2) {
-            LogMessage(L"LoadLocalData：旧版缓存格式，忽略（将在下次同步后重建）");
+        if (version < 3) {
+            LogMessage(L"LoadLocalData：旧版缓存格式(v" + std::to_wstring(version) + L")，忽略（将在下次同步后重建）");
+            // 🚀 关键修复：同时重置 last_sync_time，强制下次同步做全量拉取
+            g_LastSyncTime = 0;
+            SaveLastSyncTime(0);
             return;
         }
 
@@ -242,6 +251,8 @@ void LoadLocalData() {
         int cachedUserId = root.value("user_id", 0);
         if (cachedUserId != g_UserId) {
             LogMessage(L"LoadLocalData：缓存 userId 不匹配，跳过");
+            g_LastSyncTime = 0;
+            SaveLastSyncTime(0);
             return;
         }
 
@@ -255,6 +266,7 @@ void LoadLocalData() {
                 t.uuid        = ToWide(j.value("uuid", ""));
                 t.content     = ToWide(j.value("content", ""));
                 t.isDone      = j.value("is_done", false);
+                t.isDeleted   = j.value("is_deleted", false);
                 t.isDirty     = j.value("is_dirty", false);
                 t.lastUpdated = (time_t)(j.value("last_updated", 0LL) / 1000LL);
 
@@ -262,6 +274,11 @@ void LoadLocalData() {
                 long long dueMs     = j.value("due_date_ms", 0LL);
                 t.createdDate = UtcMsToDateString(createdMs);
                 t.dueDate     = UtcMsToDateString(dueMs);
+
+                t.recurrence         = j.value("recurrence", 0);
+                t.customIntervalDays = j.value("custom_interval_days", 0);
+                long long recEndMs   = j.value("recurrence_end_ms", 0LL);
+                t.recurrenceEndDate  = UtcMsToDateString(recEndMs);
 
                 tempTodos.push_back(t);
             }
@@ -397,7 +414,12 @@ bool AttemptAutoLogin() {
 
  // 内部辅助：生成本地临时 UUID（格式与后端兼容）
 static std::wstring GenLocalUuid() {
-    srand((unsigned int)(time(nullptr) ^ (uintptr_t)GetCurrentThreadId()));
+    // 只初始化一次随机种子，避免同一秒内调用时重复
+    static bool s_seeded = false;
+    if (!s_seeded) {
+        srand((unsigned int)(time(nullptr) ^ (uintptr_t)GetCurrentThreadId() ^ (uintptr_t)GetCurrentProcessId()));
+        s_seeded = true;
+    }
     wchar_t buf[40];
     swprintf_s(buf,
         L"pc%04x%04x-%04x-%04x-%04x-%04x%04x%04x",
@@ -454,8 +476,8 @@ void ApiUpdateTodo(const std::wstring &uuid, const std::wstring &content,
                    const std::wstring &createdDate, const std::wstring &dueDate, bool isDone) {
     std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
     for (auto &t : g_Todos) {
-        // 优先用 uuid 匹配，兼容 id 匹配（旧数据 uuid 可能为空）
-        if ((!uuid.empty() && t.uuid == uuid) || (uuid.empty() && t.id == 0)) {
+        // 优先用 uuid 精确匹配
+        if (!uuid.empty() && t.uuid == uuid) {
             t.content     = content;
             t.createdDate = createdDate;
             t.dueDate     = dueDate;
@@ -466,31 +488,24 @@ void ApiUpdateTodo(const std::wstring &uuid, const std::wstring &content,
             return;
         }
     }
-    LogMessage(L"ApiUpdateTodo: 未找到 uuid=" + uuid + L"，降级为新增");
-    // 未找到时降级为新增（容错）
+    // uuid 未找到（含 uuid 为空的旧数据）：降级为新增
+    LogMessage(L"ApiUpdateTodo: uuid=" + uuid + L" 未找到，降级为新增");
     ApiAddTodo(content, createdDate, dueDate, isDone);
 }
 
 void ApiDeleteTodo(int id) {
-    // 软删除：用特殊标记，SyncData 时携带 is_deleted=1 上传
-    // 为避免复杂度，直接从内存移除；服务器端若 uuid 找不到则忽略
-    // 对于已有 uuid 的条目，需发送一条 is_deleted=1 的 delta，
-    // 故这里将其标记删除而非立即移除
     std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
     for (auto &t : g_Todos) {
         if (t.id == id) {
-            t.isDone      = false;
+            t.isDeleted   = true;
             t.lastUpdated = time(nullptr);
             t.isDirty     = true;
-            // 用特殊 content 标记（SyncData 检测到此 flag 后以 is_deleted=1 上传）
-            // 实际上直接从列表里移除并加入"待删除队列"更干净，
-            // 简化处理：给 todo 附加一个删除标记字段
-            // 由于结构体已有限，我们暂时把 id 取负号作为删除信号
-            t.id = -(abs(t.id)); // 负数 = 标记为待删除
             LogMessage(L"本地标记待办删除（待同步）: " + t.content);
-            break;
+            return;
         }
     }
+    // 也尝试通过 uuid 匹配（id 可能已被服务器更新）
+    LogMessage(L"ApiDeleteTodo: id=" + std::to_wstring(id) + L" 未找到");
 }
 
 void ApiAddCountdown(const std::wstring &title, const std::wstring &dateStr) {
@@ -529,6 +544,23 @@ void SyncData() {
         return;
     }
 
+    // 🛡️ 安全读取 JSON 字段：字段不存在或为 null 时返回默认值，避免 type_error.302
+    auto safeInt = [](const json& j, const std::string& key, int def = 0) -> int {
+        if (!j.contains(key) || j[key].is_null()) return def;
+        if (j[key].is_number()) return j[key].get<int>();
+        return def;
+    };
+    auto safeMs = [](const json& j, const std::string& key) -> long long {
+        if (!j.contains(key) || j[key].is_null()) return 0LL;
+        if (j[key].is_number()) return j[key].get<long long>();
+        return 0LL;
+    };
+    // 支持两个备选 key（手机端用 camelCase，PC 端用 snake_case）
+    auto safeMsAlt = [&safeMs](const json& j, const std::string& k1, const std::string& k2) -> long long {
+        long long v = safeMs(j, k1);
+        return (v != 0LL) ? v : safeMs(j, k2);
+    };
+
     LogMessage(L"开始 Delta Sync (last_sync_time=" + std::to_wstring(g_LastSyncTime) + L")...");
 
     // ── 1. 构建本地变更包（dirty items）──
@@ -541,14 +573,14 @@ void SyncData() {
         for (const auto &t : g_Todos) {
             if (!t.isDirty) continue;
 
-            bool isDeleted = (t.id < 0 && !t.uuid.empty());
             json item;
             item["uuid"]         = ToUtf8(t.uuid);
             item["content"]      = ToUtf8(t.content);
             item["is_completed"] = t.isDone ? 1 : 0;
-            item["is_deleted"]   = isDeleted ? 1 : 0;
+            item["is_deleted"]   = t.isDeleted ? 1 : 0;
             item["updated_at"]   = (long long)t.lastUpdated * 1000LL;
-            item["version"]      = 1;
+            // version 用 lastUpdated 秒数低16位，保证每次修改后递增
+            item["version"]      = (int)((t.lastUpdated & 0xFFFF) + 1);
 
             // 日期字段：转为 UTC ms 时间戳
             long long createdMs = DateStringToUtcMs(t.createdDate);
@@ -559,6 +591,15 @@ void SyncData() {
             else               item["due_date"]     = nullptr;
 
             item["created_at"] = createdMs > 0 ? createdMs : (long long)t.lastUpdated * 1000LL;
+
+            // 循环字段
+            item["recurrence"]          = t.recurrence;
+            if (t.customIntervalDays > 0) item["custom_interval_days"] = t.customIntervalDays;
+            else                          item["custom_interval_days"] = nullptr;
+            long long recEndMs = DateStringToUtcMs(t.recurrenceEndDate);
+            if (recEndMs > 0) item["recurrence_end_date"] = recEndMs;
+            else              item["recurrence_end_date"] = nullptr;
+
             todosChanges.push_back(item);
         }
 
@@ -624,6 +665,10 @@ void SyncData() {
         return;
     }
 
+    // 🔍 调试：打印前1000字符的响应
+    std::string resPreview = res.length() > 1000 ? res.substr(0, 1000) + "..." : res;
+    LogMessage(L"[DEBUG] SyncResponse: " + ToWide(resPreview));
+
     // ── 5. 解析响应并合并到本地 ──
     try {
         auto resp = json::parse(res);
@@ -634,16 +679,20 @@ void SyncData() {
         }
 
         // 更新同步限额状态
-        if (resp.contains("status")) {
+        if (resp.contains("status") && resp["status"].is_object()) {
             auto &st = resp["status"];
-            if (st.contains("tier"))       g_UserTier  = ToWide(st["tier"].get<std::string>());
-            if (st.contains("sync_count")) g_SyncCount = st["sync_count"].get<int>();
-            if (st.contains("sync_limit")) g_SyncLimit = st["sync_limit"].get<int>();
+            if (st.contains("tier") && st["tier"].is_string())
+                g_UserTier  = ToWide(st["tier"].get<std::string>());
+            if (st.contains("sync_count") && st["sync_count"].is_number())
+                g_SyncCount = st["sync_count"].get<int>();
+            if (st.contains("sync_limit") && st["sync_limit"].is_number())
+                g_SyncLimit = st["sync_limit"].get<int>();
             SaveSyncStatusToLocal();
         }
 
         // 更新并持久化 last_sync_time
-        if (resp.contains("new_sync_time")) {
+        if (resp.contains("new_sync_time") && !resp["new_sync_time"].is_null()
+            && resp["new_sync_time"].is_number()) {
             g_LastSyncTime = resp["new_sync_time"].get<long long>();
             SaveLastSyncTime(g_LastSyncTime);
         }
@@ -659,61 +708,70 @@ void SyncData() {
                     sDeleted = v.is_number() ? (v.get<int>() != 0) : v.get<bool>();
                 }
 
-                std::wstring sUuid = ToWide(st.value("uuid", st.value("id", "")));
+                // 安全提取 uuid：服务器返回 uuid 字符串或 id 数字
+                std::string rawUuid;
+                if (st.contains("uuid") && st["uuid"].is_string())
+                    rawUuid = st["uuid"].get<std::string>();
+                else if (st.contains("id") && st["id"].is_number())
+                    rawUuid = std::to_string(st["id"].get<int>());
+                std::wstring sUuid = ToWide(rawUuid);
                 if (sUuid.empty()) continue;
 
                 // 从服务器时间戳转回日期字符串
-                long long createdDateMs = st.contains("created_date") && !st["created_date"].is_null()
-                    ? st["created_date"].get<long long>() : 0LL;
-                long long dueDateMs = st.contains("due_date") && !st["due_date"].is_null()
-                    ? st["due_date"].get<long long>() : 0LL;
+                long long createdDateMs = safeMs(st, "created_date");
+                long long dueDateMs     = safeMs(st, "due_date");
 
                 std::wstring sCreatedDate = UtcMsToDateString(createdDateMs);
                 std::wstring sDueDate     = UtcMsToDateString(dueDateMs);
                 std::wstring sContent     = ToWide(st.value("content", ""));
-                bool sCompleted = st.contains("is_completed")
-                    ? (st["is_completed"].is_number()
+                bool sCompleted = false;
+                if (st.contains("is_completed") && !st["is_completed"].is_null()) {
+                    sCompleted = st["is_completed"].is_number()
                         ? st["is_completed"].get<int>() != 0
-                        : st["is_completed"].get<bool>())
-                    : false;
+                        : (st["is_completed"].is_boolean() ? st["is_completed"].get<bool>() : false);
+                }
 
-                // 在本地列表中查找匹配的条目（先按 uuid，再按 content 模糊）
+                // 在本地列表中查找匹配的条目
                 auto it = std::find_if(g_Todos.begin(), g_Todos.end(),
                     [&](const Todo &t){ return t.uuid == sUuid; });
 
                 if (sDeleted) {
-                    // 服务器标记删除 → 本地移除
                     if (it != g_Todos.end()) g_Todos.erase(it);
                     continue;
                 }
 
                 if (it != g_Todos.end()) {
-                    // 已存在：仅当本地未 dirty 时才用服务器数据覆盖（避免覆盖用户正在编辑的内容）
                     if (!it->isDirty) {
                         it->content     = sContent;
                         it->isDone      = sCompleted;
                         it->createdDate = sCreatedDate;
                         it->dueDate     = sDueDate;
+                        it->recurrence         = safeInt(st, "recurrence");
+                        it->customIntervalDays = safeInt(st, "customIntervalDays") != 0
+                            ? safeInt(st, "customIntervalDays") : safeInt(st, "custom_interval_days");
+                        it->recurrenceEndDate  = UtcMsToDateString(safeMsAlt(st, "recurrenceEndDate", "recurrence_end_date"));
                     }
                 } else {
-                    // 不存在：插入新条目
                     Todo t;
-                    t.id          = st.contains("id") && st["id"].is_number()
-                                    ? st["id"].get<int>() : 0;
+                    t.id          = safeInt(st, "id");
                     t.uuid        = sUuid;
                     t.content     = sContent;
                     t.isDone      = sCompleted;
                     t.createdDate = sCreatedDate;
                     t.dueDate     = sDueDate;
+                    t.recurrence         = safeInt(st, "recurrence");
+                    t.customIntervalDays = safeInt(st, "customIntervalDays") != 0
+                        ? safeInt(st, "customIntervalDays") : safeInt(st, "custom_interval_days");
+                    t.recurrenceEndDate  = UtcMsToDateString(safeMsAlt(st, "recurrenceEndDate", "recurrence_end_date"));
                     t.lastUpdated = time(nullptr);
                     t.isDirty     = false;
                     g_Todos.push_back(t);
                 }
             }
 
-            // 清除已成功上传的 dirty 标记，并移除本地软删除条目
+            // 清除已成功上传的 isDeleted 条目；同时清除未成功分配服务器 id 的临时本地条目
             g_Todos.erase(std::remove_if(g_Todos.begin(), g_Todos.end(),
-                [](const Todo &t){ return t.id < 0; }), g_Todos.end());
+                [](const Todo &t){ return t.isDeleted; }), g_Todos.end());
             for (auto &t : g_Todos) t.isDirty = false;
 
             LogMessage(L"Todos 合并完成，当前共 " + std::to_wstring(g_Todos.size()) + L" 条");
@@ -730,10 +788,16 @@ void SyncData() {
                     sDeleted = v.is_number() ? (v.get<int>() != 0) : v.get<bool>();
                 }
 
-                std::wstring sUuid  = ToWide(sc.value("uuid", sc.value("id", "")));
-                std::wstring sTitle = ToWide(sc.value("title", ""));
-                long long targetMs  = sc.contains("target_time") && !sc["target_time"].is_null()
-                    ? sc["target_time"].get<long long>() : 0LL;
+                // 安全提取 uuid
+                std::string rawCUuid;
+                if (sc.contains("uuid") && sc["uuid"].is_string())
+                    rawCUuid = sc["uuid"].get<std::string>();
+                else if (sc.contains("id") && sc["id"].is_number())
+                    rawCUuid = std::to_string(sc["id"].get<int>());
+                std::wstring sUuid  = ToWide(rawCUuid);
+                std::wstring sTitle = ToWide(sc.contains("title") && !sc["title"].is_null()
+                    ? sc["title"].get<std::string>() : std::string(""));
+                long long targetMs  = safeMs(sc, "target_time");
                 std::wstring sDateStr = UtcMsToDateOnly(targetMs);
 
                 auto it = std::find_if(g_Countdowns.begin(), g_Countdowns.end(),
@@ -800,6 +864,19 @@ void SyncData() {
         // 🚀 合并完成后立即持久化到本地，下次重启可直接加载
         SaveLocalData();
         if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+
+        // 🚀 自愈：若合并后本地为空但 last_sync_time > 0，
+        //         说明时间戳超过了所有服务器数据的 updated_at，自动重置并重试一次全量拉取
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
+            if (g_Todos.empty() && g_Countdowns.empty() && g_LastSyncTime > 0) {
+                LogMessage(L"[自愈] 本地数据为空且 last_sync_time>0，重置为 0 后重试全量拉取...");
+                g_LastSyncTime = 0;
+                SaveLastSyncTime(0);
+                // 异步重试，避免递归调用栈溢出
+                std::thread([]() { SyncData(); }).detach();
+            }
+        }
 
     } catch (const std::exception &e) {
         LogMessage(L"Delta Sync 解析异常: " + ToWide(std::string(e.what())));

@@ -71,7 +71,7 @@ void DrawCompletedTodos(Graphics& g, int width, int height) {
         std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
         g_CompHitZones.clear();
         for (const auto& t : g_Todos) {
-            if (t.isDone) compTodos.push_back(t);
+            if (t.isDone && !t.isDeleted) compTodos.push_back(t);
         }
     }
 
@@ -221,16 +221,19 @@ LRESULT CALLBACK CompletedTodosWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp
                                 if (z.id == targetTodoId) { targetUuid = z.uuid; break; }
                             }
                         }
-                        // 乐观从列表移除
+                        // 用 isDeleted 标记软删除，SyncData 会上传 is_deleted=1
                         {
                             std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
-                            g_Todos.erase(std::remove_if(g_Todos.begin(), g_Todos.end(),
-                                [targetTodoId, &targetUuid](const auto& t) {
-                                    return (!targetUuid.empty() && t.uuid == targetUuid) || t.id == targetTodoId;
-                                }), g_Todos.end());
+                            for (auto& t : g_Todos) {
+                                if ((!targetUuid.empty() && t.uuid == targetUuid) || t.id == targetTodoId) {
+                                    t.isDeleted   = true;
+                                    t.isDirty     = true;
+                                    t.lastUpdated = time(nullptr);
+                                    break;
+                                }
+                            }
                         }
                         InvalidateRect(hWnd, NULL, FALSE);
-                        ApiDeleteTodo(targetTodoId);
                         SyncData();
                     }
                 }

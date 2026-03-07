@@ -183,7 +183,7 @@ static void RenderWeeklyView(HWND hWnd) {
             std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
             for (size_t tIdx = 0; tIdx < g_Todos.size(); ++tIdx) {
                 const auto& todo = g_Todos[tIdx];
-                if (todo.createdDate.empty()) continue;
+                if (todo.isDeleted || todo.createdDate.empty()) continue;
 
                 tm startTm = {0}, endTm = {0};
                 if (!ParseDateTimeToTM(todo.createdDate, startTm)) continue;
@@ -589,7 +589,7 @@ static LRESULT CALLBACK WeeklyWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
 
                         std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
                         for (const auto& todo : g_Todos) {
-                            if (todo.createdDate.empty()) continue;
+                            if (todo.isDeleted || todo.createdDate.empty()) continue;
 
                             tm startTm = {0}, endTm = {0};
                             if (!ParseDateTimeToTM(todo.createdDate, startTm)) continue;

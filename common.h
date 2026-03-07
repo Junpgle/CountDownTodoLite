@@ -52,14 +52,20 @@ void CleanupCustomFont();
 // --- 🚀 数据结构定义 ---
 
 struct Todo {
-    int id;
-    std::wstring uuid;       // 🚀 新增：后端 UUID，用于 Delta Sync 去重
+    int id            = 0;
+    std::wstring uuid;
     std::wstring content;
-    bool isDone;
-    time_t lastUpdated;
+    bool isDone       = false;
+    bool isDeleted    = false;   // 真正的软删除标记（不再用 id<0 混用）
+    time_t lastUpdated = 0;
     std::wstring createdDate;
     std::wstring dueDate;
-    bool isDirty = false;    // 🚀 新增：本地有修改尚未上传时为 true
+    bool isDirty      = false;   // 本地有修改尚未上传时为 true
+
+    // 循环待办字段（对齐手机端）
+    int  recurrence         = 0;  // 0=none,1=daily,2=customDays
+    int  customIntervalDays = 0;
+    std::wstring recurrenceEndDate;
 };
 
 struct Countdown {
