@@ -168,44 +168,39 @@ LRESULT CALLBACK CompletedTodosWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp
             int x = LOWORD(lp), y = HIWORD(lp);
             float headerHeight = (float)S(80);
 
-            // 仅当点击位置在滚动区域内时检测按钮
             if (y >= headerHeight) {
-                float adjustedY = y + g_CompScrollY;
+                float adjustedY = (float)y + g_CompScrollY;
                 int actionId = 0;
                 int targetTodoId = -1;
+                std::wstring targetUuid;
 
+                // 一次性拿到 id、uuid、action，不再二次查找
                 {
                     std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
                     for (const auto& z : g_CompHitZones) {
                         if (z.rect.Contains((REAL)x, adjustedY)) {
                             targetTodoId = z.id;
-                            actionId = z.action;
+                            targetUuid   = z.uuid;
+                            actionId     = z.action;
                             break;
                         }
                     }
                 }
 
                 if (actionId == 1) { // 恢复
-                    // 优先用 uuid 找到真实 id
-                    std::wstring targetUuid;
-                    {
-                        std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
-                        for (const auto& z : g_CompHitZones) {
-                            if (z.id == targetTodoId) { targetUuid = z.uuid; break; }
-                        }
-                    }
-                    // 乐观更新 UI 以获得即时反馈
                     {
                         std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
                         for (auto& t : g_Todos) {
-                            if ((!targetUuid.empty() && t.uuid == targetUuid) || t.id == targetTodoId) {
-                                t.isDone = false;
+                            if ((!targetUuid.empty() && t.uuid == targetUuid) ||
+                                (targetUuid.empty() && t.id == targetTodoId)) {
+                                t.isDone      = false;
+                                t.isDirty     = true;
+                                t.lastUpdated = time(nullptr);
                                 break;
                             }
                         }
                     }
                     InvalidateRect(hWnd, NULL, FALSE);
-                    // 后台发起 API 同步
                     if (!targetUuid.empty())
                         ApiToggleTodoByUuid(targetUuid, false);
                     else
@@ -214,18 +209,11 @@ LRESULT CALLBACK CompletedTodosWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp
                 }
                 else if (actionId == 2) { // 彻底删除
                     if (MessageBoxW(hWnd, L"确定要彻底删除这条已完成的事项吗？", L"确认删除", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                        std::wstring targetUuid;
-                        {
-                            std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
-                            for (const auto& z : g_CompHitZones) {
-                                if (z.id == targetTodoId) { targetUuid = z.uuid; break; }
-                            }
-                        }
-                        // 用 isDeleted 标记软删除，SyncData 会上传 is_deleted=1
                         {
                             std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
                             for (auto& t : g_Todos) {
-                                if ((!targetUuid.empty() && t.uuid == targetUuid) || t.id == targetTodoId) {
+                                if ((!targetUuid.empty() && t.uuid == targetUuid) ||
+                                    (targetUuid.empty() && t.id == targetTodoId)) {
                                     t.isDeleted   = true;
                                     t.isDirty     = true;
                                     t.lastUpdated = time(nullptr);

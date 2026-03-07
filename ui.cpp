@@ -585,27 +585,23 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     else if (z.type == 3) {
                         if (x < S(30)) {
-                            // 切换完成状态
-                            bool done = false;
-                            int matchId = z.id;
+                            // 勾选框：直接在 g_Todos 里 uuid 精确匹配并就地切换
                             std::wstring matchUuid = z.uuid;
+                            int matchId = z.id;
                             {
                                 std::lock_guard<std::recursive_mutex> l(g_DataMutex);
                                 for (auto &t : g_Todos) {
-                                    if ((!matchUuid.empty() && t.uuid == matchUuid) || t.id == matchId) {
-                                        done      = t.isDone;
-                                        matchId   = t.id;
-                                        matchUuid = t.uuid;
+                                    if ((!matchUuid.empty() && t.uuid == matchUuid) ||
+                                        (matchUuid.empty() && t.id == matchId)) {
+                                        t.isDone      = !t.isDone;
+                                        t.isDirty     = true;
+                                        t.lastUpdated = time(nullptr);
                                         break;
                                     }
                                 }
                             }
-                            if (!matchUuid.empty())
-                                ApiToggleTodoByUuid(matchUuid, !done);
-                            else
-                                ApiToggleTodo(matchId, !done);
                         } else {
-                            // 编辑待办：读取原始数据含 remark
+                            // 内容区：编辑待办
                             std::wstring c, d1, d2, rem;
                             bool currentDone = false;
                             std::wstring foundUuid = z.uuid;
