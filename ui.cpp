@@ -381,7 +381,7 @@ void RenderWidget() {
             }
             SolidBrush titleBr(titleCol);
 
-            // 滚动截断标题
+            // 滚动截断标题（仅 content 滚动，备注单独处理）
             std::wstring dispContent = it.content;
             const size_t MAX_LEN = 8;
             if (dispContent.length() > MAX_LEN) {
@@ -398,6 +398,24 @@ void RenderWidget() {
             }
             Font itemF(&ff, (REAL)S(13), FontStyleRegular, UnitPixel);
             g.DrawString(dispContent.c_str(), -1, &itemF, PointF((REAL)S(35), y + S(3)), &titleBr);
+
+            // 备注：固定显示在标题右侧空白区，右对齐靠近 [-] 按钮，不参与滚动
+            if (!it.remark.empty()) {
+                // 可用宽度：标题结束(S(35)+S(8*13)) ~ [-] 左边(width-S(42))
+                float remarkX  = (REAL)S(35) + S(MAX_LEN * 13) + S(6); // 标题右侧 6px
+                float remarkW  = (REAL)(width - S(42)) - remarkX;
+                if (remarkW > S(10)) {
+                    Font remarkF(&ff, (REAL)S(11), FontStyleRegular, UnitPixel);
+                    SolidBrush remarkBr(Color(180, 255, 210, 100)); // 淡黄色
+                    RectF remarkRect(remarkX, y + S(4), remarkW, (REAL)S(16));
+                    StringFormat sfRem;
+                    sfRem.SetAlignment(StringAlignmentNear);
+                    sfRem.SetLineAlignment(StringAlignmentNear);
+                    sfRem.SetTrimming(StringTrimmingEllipsisCharacter);
+                    sfRem.SetFormatFlags(StringFormatFlagsNoWrap);
+                    g.DrawString(it.remark.c_str(), -1, &remarkF, remarkRect, &sfRem, &remarkBr);
+                }
+            }
 
             // 删除按钮
             g.DrawString(L"[-]", -1, &headF, PointF((REAL)(width - S(40)), y + S(4)), &rBrush);
@@ -444,7 +462,7 @@ void RenderWidget() {
             g.DrawString(dateLabel.c_str(), -1, &dateF, dateRect, &sfDate, &dateBr);
 
             y += S(42);
-        };
+        }; // end drawTodoItem
 
         bool anyTodo = !pastTodos.empty() || !todayTodos.empty() || !futureTodos.empty();
 
@@ -521,7 +539,7 @@ void ResizeWidget() {
             else if (td > tTodayEnd) futureCnt++;
             else todayCnt++;
         }
-        int todoH = S(30); // 标题行
+        int todoH = S(30);
         if (pastCnt > 0)   todoH += S(18) + pastCnt   * S(42);
         if (todayCnt > 0)  todoH += S(18) + todayCnt  * S(42);
         if (futureCnt > 0) todoH += S(18) + futureCnt * S(42);
@@ -552,14 +570,22 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (z.rect.Contains(x, y)) {
                     hit = true;
                     if (z.type == 1) {
-                        std::wstring c, d1, d2; if (ShowInputDialog(hWnd, 0, c, d1, d2)) { ApiAddTodo(c, d1, d2, false); SyncData(); }
+                        std::wstring c, d1, d2, rem;
+                        if (ShowInputDialog(hWnd, 0, c, d1, d2, rem)) {
+                            ApiAddTodo(c, d1, d2, false, rem);
+                            SyncData();
+                        }
                     }
                     else if (z.type == 2) {
-                        std::wstring t, d, dummy; if (ShowInputDialog(hWnd, 1, t, d, dummy)) { ApiAddCountdown(t, d); SyncData(); }
+                        std::wstring t, d, dummy, dummy2;
+                        if (ShowInputDialog(hWnd, 1, t, d, dummy, dummy2)) {
+                            ApiAddCountdown(t, d);
+                            SyncData();
+                        }
                     }
                     else if (z.type == 3) {
                         if (x < S(30)) {
-                            // 切换完成状态：优先用 uuid 匹配
+                            // 切换完成状态
                             bool done = false;
                             int matchId = z.id;
                             std::wstring matchUuid = z.uuid;
@@ -579,8 +605,8 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                             else
                                 ApiToggleTodo(matchId, !done);
                         } else {
-                            // 编辑待办：用 uuid 查找原始数据
-                            std::wstring c, d1, d2;
+                            // 编辑待办：读取原始数据含 remark
+                            std::wstring c, d1, d2, rem;
                             bool currentDone = false;
                             std::wstring foundUuid = z.uuid;
                             int foundId = z.id;
@@ -591,16 +617,16 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                                         c           = t.content;
                                         d1          = t.createdDate;
                                         d2          = t.dueDate;
+                                        rem         = t.remark;
                                         currentDone = t.isDone;
-                                        foundUuid   = t.uuid; // 确保拿到最新 uuid
+                                        foundUuid   = t.uuid;
                                         foundId     = t.id;
                                         break;
                                     }
                                 }
                             }
-                            // 🚀 修复：编辑完成后调用 ApiUpdateTodo 原地更新，而非 ApiAddTodo 新增
-                            if (ShowInputDialog(hWnd, 0, c, d1, d2)) {
-                                ApiUpdateTodo(foundUuid, c, d1, d2, currentDone);
+                            if (ShowInputDialog(hWnd, 0, c, d1, d2, rem)) {
+                                ApiUpdateTodo(foundUuid, c, d1, d2, currentDone, rem);
                             }
                         }
                         SyncData();
@@ -694,45 +720,60 @@ LRESULT CALLBACK InputWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             InputState::result3 = buf;
         }
 
+        // 读取备注框（type==0 时存在）
+        HWND hRemark = GetDlgItem(hWnd, 104);
+        if (hRemark) {
+            WCHAR rem[512] = {}; GetWindowTextW(hRemark, rem, 512);
+            InputState::result4 = rem;
+        } else {
+            InputState::result4.clear();
+        }
+
         InputState::isOk = true; DestroyWindow(hWnd);
     } else if (msg == WM_COMMAND && LOWORD(wp) == IDCANCEL) DestroyWindow(hWnd);
     return DefWindowProc(hWnd, msg, wp, lp);
 }
 
-bool ShowInputDialog(HWND parent, int type, std::wstring &o1, std::wstring &o2, std::wstring &o3) {
+// o4 = remark（仅 type==0 待办对话框使用）
+bool ShowInputDialog(HWND parent, int type, std::wstring &o1, std::wstring &o2, std::wstring &o3, std::wstring &o4) {
     InputState::isOk = false;
+    InputState::result4.clear();
     WNDCLASSW wc = {0}; wc.lpfnWndProc = InputWndProc; wc.hInstance = GetModuleHandle(NULL);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.lpszClassName = L"InputDlg"; RegisterClassW(&wc);
 
-    int dlgHeight = (type == 2) ? S(140) : S(260);
+    // type==0 待办：内容+开始+截止+备注 → 高度更大
+    int dlgHeight = (type == 2) ? S(140) : (type == 0 ? S(320) : S(220));
     HWND hDlg = CreateWindowExW(0, L"InputDlg",
         type == 0 ? L"待办事项" : (type == 1 ? L"日期设置" : L"同步频率"),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-        100, 100, S(350), dlgHeight, parent, NULL, NULL, NULL);
+        100, 100, S(380), dlgHeight, parent, NULL, NULL, NULL);
 
     HFONT hF = GetMiSansFont(14);
 
+    // 行1：内容 / 标题 / 间隔
     CreateWindowW(L"STATIC", type == 2 ? L"间隔(分):" : (type == 0 ? L"内容:" : L"标题:"),
-        WS_CHILD | WS_VISIBLE, S(20), S(20), S(80), S(20), hDlg, NULL, NULL, NULL);
+        WS_CHILD | WS_VISIBLE, S(20), S(20), S(75), S(20), hDlg, NULL, NULL, NULL);
     CreateWindowW(L"EDIT", o1.c_str(), WS_CHILD | WS_VISIBLE | WS_BORDER | (type == 2 ? ES_NUMBER : 0),
-        S(100), S(18), S(200), S(25), hDlg, (HMENU)101, NULL, NULL);
+        S(100), S(18), S(240), S(25), hDlg, (HMENU)101, NULL, NULL);
 
     if (type != 2) {
-        CreateWindowW(L"STATIC", type == 0 ? L"开始时间:" : L"目标日期:", WS_CHILD | WS_VISIBLE, S(20), S(60), S(80), S(20), hDlg, NULL, NULL, NULL);
+        // 行2：开始/目标时间
+        CreateWindowW(L"STATIC", type == 0 ? L"开始时间:" : L"目标日期:",
+            WS_CHILD | WS_VISIBLE, S(20), S(60), S(75), S(20), hDlg, NULL, NULL, NULL);
         HWND hPicker1 = CreateWindowExW(0, DATETIMEPICK_CLASS, L"", WS_BORDER | WS_CHILD | WS_VISIBLE,
-            S(100), S(58), S(200), S(25), hDlg, (HMENU)102, NULL, NULL);
+            S(100), S(58), S(240), S(25), hDlg, (HMENU)102, NULL, NULL);
         DateTime_SetFormat(hPicker1, L"yyyy-MM-dd HH:mm");
-
         SYSTEMTIME stStart;
         StringToSystemTime(o2.empty() ? GetTodayDate() : o2, stStart);
         DateTime_SetSystemtime(hPicker1, GDT_VALID, &stStart);
 
         if (type == 0) {
-            CreateWindowW(L"STATIC", L"截止时间:", WS_CHILD | WS_VISIBLE, S(20), S(100), S(80), S(20), hDlg, NULL, NULL, NULL);
+            // 行3：截止时间
+            CreateWindowW(L"STATIC", L"截止时间:",
+                WS_CHILD | WS_VISIBLE, S(20), S(100), S(75), S(20), hDlg, NULL, NULL, NULL);
             HWND hPicker2 = CreateWindowExW(0, DATETIMEPICK_CLASS, L"", WS_BORDER | WS_CHILD | WS_VISIBLE,
-                S(100), S(98), S(200), S(25), hDlg, (HMENU)103, NULL, NULL);
+                S(100), S(98), S(240), S(25), hDlg, (HMENU)103, NULL, NULL);
             DateTime_SetFormat(hPicker2, L"yyyy-MM-dd HH:mm");
-
             SYSTEMTIME stEnd;
             if (o3.empty()) {
                 GetLocalTime(&stEnd);
@@ -743,17 +784,26 @@ bool ShowInputDialog(HWND parent, int type, std::wstring &o1, std::wstring &o2, 
                 FileTimeToSystemTime(&ft, &stEnd);
             } else { StringToSystemTime(o3, stEnd); }
             DateTime_SetSystemtime(hPicker2, GDT_VALID, &stEnd);
+
+            // 行4：备注（多行 EDIT）
+            CreateWindowW(L"STATIC", L"备注:",
+                WS_CHILD | WS_VISIBLE, S(20), S(140), S(75), S(20), hDlg, NULL, NULL, NULL);
+            HWND hRemark = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", o4.c_str(),
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+                S(100), S(138), S(240), S(60), hDlg, (HMENU)104, NULL, NULL);
+            (void)hRemark;
         }
     }
 
-    int btnY = (type == 2) ? S(60) : S(160);
-    CreateWindowW(L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE, S(120), btnY, S(100), S(35), hDlg, (HMENU)IDOK, NULL, NULL);
+    int btnY = (type == 2) ? S(60) : (type == 0 ? S(218) : S(140));
+    CreateWindowW(L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE,
+        S(130), btnY, S(110), S(35), hDlg, (HMENU)IDOK, NULL, NULL);
 
     EnumChildWindows(hDlg, [](HWND h, LPARAM p){ SendMessage(h, WM_SETFONT, p, TRUE); return TRUE; }, (LPARAM)hF);
     ShowWindow(hDlg, SW_SHOW); EnableWindow(parent, FALSE);
     MSG m; while (GetMessage(&m, NULL, 0, 0)) { TranslateMessage(&m); DispatchMessage(&m); if (!IsWindow(hDlg)) break; }
     EnableWindow(parent, TRUE); SetForegroundWindow(parent);
-    o1 = InputState::result1; o2 = InputState::result2; o3 = InputState::result3;
+    o1 = InputState::result1; o2 = InputState::result2; o3 = InputState::result3; o4 = InputState::result4;
     return InputState::isOk;
 }
 

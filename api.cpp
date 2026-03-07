@@ -152,7 +152,7 @@ static std::wstring GetDataCachePath() {
 void SaveLocalData() {
     try {
         json root;
-        root["version"]    = 3; // v3：添加 is_deleted 和循环字段
+        root["version"]    = 4; // v4：添加 remark 备注字段
         root["saved_at"]   = (long long)time(nullptr) * 1000LL;
         root["user_id"]    = g_UserId;
 
@@ -178,6 +178,8 @@ void SaveLocalData() {
                 j["recurrence"]           = t.recurrence;
                 j["custom_interval_days"] = t.customIntervalDays;
                 j["recurrence_end_ms"]    = DateStringToUtcMs(t.recurrenceEndDate);
+                // 备注字段
+                j["remark"]               = ToUtf8(t.remark);
                 todosArr.push_back(j);
             }
 
@@ -237,9 +239,9 @@ void LoadLocalData() {
     try {
         auto root = json::parse(s);
 
-        // 版本检查：低于 v3 的旧格式直接丢弃（字段不兼容）
+        // 版本检查：低于 v4 的旧格式直接丢弃（字段不兼容）
         int version = root.value("version", 1);
-        if (version < 3) {
+        if (version < 4) {
             LogMessage(L"LoadLocalData：旧版缓存格式(v" + std::to_wstring(version) + L")，忽略（将在下次同步后重建）");
             // 🚀 关键修复：同时重置 last_sync_time，强制下次同步做全量拉取
             g_LastSyncTime = 0;
@@ -279,6 +281,7 @@ void LoadLocalData() {
                 t.customIntervalDays = j.value("custom_interval_days", 0);
                 long long recEndMs   = j.value("recurrence_end_ms", 0LL);
                 t.recurrenceEndDate  = UtcMsToDateString(recEndMs);
+                t.remark             = ToWide(j.value("remark", ""));
 
                 tempTodos.push_back(t);
             }
@@ -431,16 +434,17 @@ static std::wstring GenLocalUuid() {
 }
 
 void ApiAddTodo(const std::wstring &content, const std::wstring &createdDate,
-                const std::wstring &dueDate, bool isDone) {
+                const std::wstring &dueDate, bool isDone, const std::wstring &remark) {
     std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
     Todo t;
-    t.id          = -(int)(g_Todos.size() + 1); // 负数临时 ID，服务器分配后替换
+    t.id          = -(int)(g_Todos.size() + 1);
     t.uuid        = GenLocalUuid();
     t.content     = content;
     t.isDone      = isDone;
     t.lastUpdated = time(nullptr);
     t.createdDate = createdDate;
     t.dueDate     = dueDate;
+    t.remark      = remark;
     t.isDirty     = true;
     g_Todos.push_back(t);
     LogMessage(L"本地新增待办（待同步）: " + content);
@@ -473,24 +477,24 @@ void ApiToggleTodoByUuid(const std::wstring &uuid, bool done) {
 }
 
 void ApiUpdateTodo(const std::wstring &uuid, const std::wstring &content,
-                   const std::wstring &createdDate, const std::wstring &dueDate, bool isDone) {
+                   const std::wstring &createdDate, const std::wstring &dueDate, bool isDone,
+                   const std::wstring &remark) {
     std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
     for (auto &t : g_Todos) {
-        // 优先用 uuid 精确匹配
         if (!uuid.empty() && t.uuid == uuid) {
             t.content     = content;
             t.createdDate = createdDate;
             t.dueDate     = dueDate;
             t.isDone      = isDone;
+            t.remark      = remark;
             t.lastUpdated = time(nullptr);
             t.isDirty     = true;
             LogMessage(L"本地更新待办（待同步）: " + content);
             return;
         }
     }
-    // uuid 未找到（含 uuid 为空的旧数据）：降级为新增
     LogMessage(L"ApiUpdateTodo: uuid=" + uuid + L" 未找到，降级为新增");
-    ApiAddTodo(content, createdDate, dueDate, isDone);
+    ApiAddTodo(content, createdDate, dueDate, isDone, remark);
 }
 
 void ApiDeleteTodo(int id) {
@@ -599,6 +603,10 @@ void SyncData() {
             long long recEndMs = DateStringToUtcMs(t.recurrenceEndDate);
             if (recEndMs > 0) item["recurrence_end_date"] = recEndMs;
             else              item["recurrence_end_date"] = nullptr;
+
+            // 备注字段
+            if (!t.remark.empty()) item["remark"] = ToUtf8(t.remark);
+            else                   item["remark"] = nullptr;
 
             todosChanges.push_back(item);
         }
@@ -750,6 +758,11 @@ void SyncData() {
                         it->customIntervalDays = safeInt(st, "customIntervalDays") != 0
                             ? safeInt(st, "customIntervalDays") : safeInt(st, "custom_interval_days");
                         it->recurrenceEndDate  = UtcMsToDateString(safeMsAlt(st, "recurrenceEndDate", "recurrence_end_date"));
+                        // remark
+                        if (st.contains("remark") && st["remark"].is_string())
+                            it->remark = ToWide(st["remark"].get<std::string>());
+                        else
+                            it->remark = L"";
                     }
                 } else {
                     Todo t;
@@ -763,6 +776,9 @@ void SyncData() {
                     t.customIntervalDays = safeInt(st, "customIntervalDays") != 0
                         ? safeInt(st, "customIntervalDays") : safeInt(st, "custom_interval_days");
                     t.recurrenceEndDate  = UtcMsToDateString(safeMsAlt(st, "recurrenceEndDate", "recurrence_end_date"));
+                    // remark
+                    if (st.contains("remark") && st["remark"].is_string())
+                        t.remark = ToWide(st["remark"].get<std::string>());
                     t.lastUpdated = time(nullptr);
                     t.isDirty     = false;
                     g_Todos.push_back(t);

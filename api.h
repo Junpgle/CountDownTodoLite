@@ -16,8 +16,8 @@ void SaveLocalData();
 void LoadLocalData();
 
 // 待办操作
-void ApiAddTodo(const std::wstring &content, const std::wstring &createdDate, const std::wstring &dueDate, bool isDone);
-void ApiUpdateTodo(const std::wstring &uuid, const std::wstring &content, const std::wstring &createdDate, const std::wstring &dueDate, bool isDone);
+void ApiAddTodo(const std::wstring &content, const std::wstring &createdDate, const std::wstring &dueDate, bool isDone, const std::wstring &remark = L"");
+void ApiUpdateTodo(const std::wstring &uuid, const std::wstring &content, const std::wstring &createdDate, const std::wstring &dueDate, bool isDone, const std::wstring &remark = L"");
 void ApiToggleTodo(int id, bool done);
 void ApiToggleTodoByUuid(const std::wstring &uuid, bool done);
 void ApiDeleteTodo(int id);

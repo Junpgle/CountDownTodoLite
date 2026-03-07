@@ -72,6 +72,9 @@ struct Todo {
     int  recurrence         = 0;  // 0=none,1=daily,2=customDays
     int  customIntervalDays = 0;
     std::wstring recurrenceEndDate;
+
+    // 备注字段（对齐后端 remark 列）
+    std::wstring remark;
 };
 
 struct Countdown {
@@ -158,6 +161,7 @@ namespace InputState {
     extern std::wstring result1;
     extern std::wstring result2;
     extern std::wstring result3;
+    extern std::wstring result4; // 备注 remark
     extern bool isOk;
 }
 

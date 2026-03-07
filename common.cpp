@@ -50,5 +50,6 @@ namespace InputState {
     std::wstring result1;
     std::wstring result2;
     std::wstring result3;
+    std::wstring result4; // 备注 remark
     bool isOk = false;
 }
