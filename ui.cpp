@@ -1,12 +1,14 @@
 #include "ui.h"
 #include "utils.h"
 #include "api.h"
-#include "common.h" // 🚀 必须包含 .h 而非 .cpp
+#include "common.h"
 #include "stats_window.h"
-#include "weekly_view_window.h" // 🚀 引入周视图头文件
+#include "weekly_view_window.h"
+#include "settings_window.h"
 #include <commctrl.h>
 #include <algorithm>
 #include <ctime>
+#include <thread>
 #include <shlwapi.h>
 
 #pragma comment(lib, "shlwapi.lib")
@@ -17,7 +19,7 @@ using namespace Gdiplus;
 extern void CheckForUpdates(bool isManual = false);
 extern void ShowStatsWindow(HWND parent);
 extern void ShowCompletedTodosWindow(HWND parent);
-extern bool ApiFetchUserStatus(); // 🚀 声明其返回布尔值以检测离线状态
+extern bool ApiFetchUserStatus();
 
 // 定时器 ID
 const UINT_PTR SCROLL_TIMER_ID = 1001;
@@ -275,97 +277,208 @@ void RenderWidget() {
             }
         }
 
-        // --- 待办事项板块 ---
+        // ================================================================
+        // --- 待办事项板块（对齐手机端三区块逻辑）---
+        // ================================================================
         y += S(10);
-        g.DrawString(L"待办事项", -1, &headF, PointF((REAL) S(15), y), &gBrush);
 
-        // 增加 [已完成] 按钮
-        g.DrawString(L"[已完成]", -1, &headF, PointF((REAL) (width - S(100)), y), &grBrush);
-        g_HitZones.push_back({Rect(width - S(105), (int) y, S(50), S(20)), 0, 7});
+        // 标题行
+        g.DrawString(L"待办事项", -1, &headF, PointF((REAL)S(15), y), &gBrush);
+        g.DrawString(L"[已完成]", -1, &headF, PointF((REAL)(width - S(100)), y), &grBrush);
+        g_HitZones.push_back({Rect(width - S(105), (int)y, S(50), S(20)), 0, 7});
+        g.DrawString(L"[+]", -1, &headF, PointF((REAL)(width - S(40)), y), &grBrush);
+        g_HitZones.push_back({Rect(width - S(45), (int)y, S(30), S(20)), 0, 1});
+        y += S(22);
 
-        g.DrawString(L"[+]", -1, &headF, PointF((REAL) (width - S(40)), y), &grBrush);
-        g_HitZones.push_back({Rect(width - S(45), (int) y, S(30), S(20)), 0, 1});
-        y += S(20);
+        // ── 辅助：把 "YYYY-MM-DD HH:MM" 字符串解析为 time_t ──
+        auto parseDate = [](const std::wstring& s, bool endOfDay) -> time_t {
+            int yr=0,mo=0,dy=0,hr=0,mn=0;
+            int cnt = swscanf(s.c_str(), L"%d-%d-%d %d:%d",&yr,&mo,&dy,&hr,&mn);
+            if (cnt < 3) return 0;
+            struct tm t={};
+            t.tm_year=yr-1900; t.tm_mon=mo-1; t.tm_mday=dy;
+            if(cnt>=5){t.tm_hour=hr;t.tm_min=mn;}
+            else if(endOfDay){t.tm_hour=23;t.tm_min=59;t.tm_sec=59;}
+            t.tm_isdst=-1;
+            return mktime(&t);
+        };
 
-        auto displayTodos = g_Todos;
-        // 过滤掉已完成的待办事项
-        displayTodos.erase(std::remove_if(displayTodos.begin(), displayTodos.end(), [](const auto& t) { return t.isDone; }), displayTodos.end());
+        // 当前时间 & 今天0点
+        time_t tNow  = time(nullptr);
+        struct tm nowTm; localtime_s(&nowTm, &tNow);
+        nowTm.tm_hour=0; nowTm.tm_min=0; nowTm.tm_sec=0;
+        time_t tTodayStart = mktime(&nowTm);
+        time_t tTodayEnd   = tTodayStart + 86399;
 
-        std::sort(displayTodos.begin(), displayTodos.end(), [](const auto& a, const auto& b) {
-            if (a.isDone != b.isDone) return !a.isDone;
-            bool aToday = IsTodayRelevant(a.createdDate, a.dueDate);
-            bool bToday = IsTodayRelevant(b.createdDate, b.dueDate);
-            if (aToday != bToday) return aToday;
-            float progA = CalculateTodoProgress(a.createdDate, a.dueDate);
-            float progB = CalculateTodoProgress(b.createdDate, b.dueDate);
-            if (std::abs(progA - progB) > 0.001f) return progA > progB;
-            if (a.dueDate != b.dueDate) {
-                if (a.dueDate.empty()) return false;
-                if (b.dueDate.empty()) return true;
-                return a.dueDate < b.dueDate;
+        // ── 分桶：过期 / 今日 / 未来 ──
+        struct TodoBucket { const Todo* t; time_t dueTime; float progress; };
+        std::vector<TodoBucket> pastTodos, todayTodos, futureTodos;
+
+        for (const auto& t : g_Todos) {
+            if (t.isDone) continue;
+
+            time_t tDue = t.dueDate.empty() ? 0 : parseDate(t.dueDate, true);
+
+            // 计算进度
+            time_t tStart = parseDate(t.createdDate, false);
+            time_t tEnd   = (tDue > 0) ? tDue : (tTodayStart + 86399);
+            float prog = 0.f;
+            if (tStart < tEnd) {
+                if      (tNow <= tStart) prog = 0.f;
+                else if (tNow >= tEnd)   prog = 1.f;
+                else prog = (float)(tNow - tStart) / (float)(tEnd - tStart);
             }
+
+            TodoBucket bk{&t, tDue, prog};
+
+            if (tDue > 0 && tDue < tTodayStart) {
+                pastTodos.push_back(bk);
+            } else if (tDue > tTodayEnd) {
+                futureTodos.push_back(bk);
+            } else {
+                // tDue 在今天范围内，或无截止日期
+                todayTodos.push_back(bk);
+            }
+        }
+
+        // 排序：今日 —— 进度高优先，同进度则持续短优先
+        std::sort(todayTodos.begin(), todayTodos.end(), [](const TodoBucket& a, const TodoBucket& b){
+            if (std::abs(a.progress - b.progress) > 0.001f) return a.progress > b.progress;
             return false;
         });
+        // 未来 —— 进度高优先，同进度则截止日近优先
+        std::sort(futureTodos.begin(), futureTodos.end(), [](const TodoBucket& a, const TodoBucket& b){
+            if (std::abs(a.progress - b.progress) > 0.001f) return a.progress > b.progress;
+            if (a.dueTime != b.dueTime) return a.dueTime < b.dueTime;
+            return false;
+        });
+        // 过期 —— 进度高优先
+        std::sort(pastTodos.begin(), pastTodos.end(), [](const TodoBucket& a, const TodoBucket& b){
+            return a.progress > b.progress;
+        });
 
-        if (displayTodos.empty()) {
-            g.DrawString(L"暂无待办", -1, &contentF, PointF((REAL) S(15), y), &gBrush);
+        // ── 通用绘制单条待办 ──
+        // colorStyle: 0=今日(白), 1=未来(灰), 2=过期(红)
+        auto drawTodoItem = [&](const TodoBucket& bk, int colorStyle) {
+            const Todo& it = *bk.t;
+            float prog = bk.progress;
+
+            // 命中区
+            g_HitZones.push_back({Rect(S(15), (int)y, width - S(65), S(40)), it.id, 3, it.uuid});
+            g_HitZones.push_back({Rect(width - S(45), (int)y, S(35), S(40)), it.id, 5, it.uuid});
+
+            // 勾选框
+            Pen checkPen(Color(180, 255, 255, 255), 1.2f);
+            g.DrawRectangle(&checkPen, (REAL)S(15), y + S(5), (REAL)S(13), (REAL)S(13));
+
+            // 标题颜色
+            Color titleCol;
+            switch(colorStyle) {
+                case 2:  titleCol = Color(255, 255, 120, 100); break; // 逾期 - 红
+                case 1:  titleCol = Color(180, 200, 200, 210); break; // 未来 - 暗灰
+                default: titleCol = Color(255, 255, 255, 255); break; // 今日 - 白
+            }
+            SolidBrush titleBr(titleCol);
+
+            // 滚动截断标题
+            std::wstring dispContent = it.content;
+            const size_t MAX_LEN = 8;
+            if (dispContent.length() > MAX_LEN) {
+                std::wstring spacer = L"   ";
+                std::wstring scrollText = dispContent + spacer;
+                size_t textLen = scrollText.length();
+                const DWORD PAUSE_MS = 4000;
+                const DWORD SPEED_MS = 280;
+                DWORD cycle = PAUSE_MS + (DWORD)(textLen * SPEED_MS);
+                DWORD cur = GetTickCount() % cycle;
+                size_t offset = (cur > PAUSE_MS) ? (cur - PAUSE_MS) / SPEED_MS : 0;
+                std::wstring doubled = scrollText + scrollText;
+                dispContent = doubled.substr(offset % textLen, MAX_LEN);
+            }
+            Font itemF(&ff, (REAL)S(13), FontStyleRegular, UnitPixel);
+            g.DrawString(dispContent.c_str(), -1, &itemF, PointF((REAL)S(35), y + S(3)), &titleBr);
+
+            // 删除按钮
+            g.DrawString(L"[-]", -1, &headF, PointF((REAL)(width - S(40)), y + S(4)), &rBrush);
+
+            // 进度条（高度 S(4)）
+            int barX = S(35), barY = (int)y + S(21);
+            int barW = width - S(85);
+            SolidBrush barBg(Color(40, 255, 255, 255));
+            g.FillRectangle(&barBg, barX, barY, barW, S(4));
+            Color barColor;
+            if (colorStyle == 2) barColor = Color(220, 255, 90, 70);       // 逾期 - 深红
+            else if (prog >= 0.85f) barColor = Color(255, 255, 120, 50);   // 紧迫 - 橙
+            else barColor = Color(255, 80, 210, 120);                       // 正常 - 绿
+            SolidBrush barFg(barColor);
+            g.FillRectangle(&barFg, barX, barY, (int)(barW * prog), S(4));
+
+            // 百分比
+            std::wstring pctStr = std::to_wstring((int)(prog * 100)) + L"%";
+            SolidBrush pctBr(Color(160, 200, 200, 200));
+            g.DrawString(pctStr.c_str(), -1, &dateF, PointF((REAL)(width - S(42)), y + S(18)), &pctBr);
+
+            // 日期标签（右对齐，截止在进度条右侧上方）
+            std::wstring dateLabel;
+            if (!it.dueDate.empty()) {
+                std::wstring duePart = it.dueDate.length() >= 16 ? it.dueDate.substr(5, 11) : it.dueDate;
+                if (colorStyle == 2) dateLabel = duePart + L" 逾期";
+                else if (colorStyle == 1) {
+                    // 计算剩余天数
+                    time_t diff = bk.dueTime - tNow;
+                    int days = (int)(diff / 86400);
+                    dateLabel = duePart + L" +" + std::to_wstring(days) + L"天";
+                } else {
+                    dateLabel = duePart + L" 今天";
+                }
+            } else {
+                std::wstring startPart = it.createdDate.length() >= 16 ? it.createdDate.substr(5, 11) : it.createdDate;
+                dateLabel = L"始于 " + startPart;
+            }
+            SolidBrush dateBr(Color(130, 200, 200, 200));
+            RectF dateRect((REAL)S(35), y + S(28), (REAL)(barW), (REAL)S(14));
+            StringFormat sfDate;
+            sfDate.SetTrimming(StringTrimmingEllipsisCharacter);
+            sfDate.SetFormatFlags(StringFormatFlagsNoWrap);
+            g.DrawString(dateLabel.c_str(), -1, &dateF, dateRect, &sfDate, &dateBr);
+
+            y += S(42);
+        };
+
+        bool anyTodo = !pastTodos.empty() || !todayTodos.empty() || !futureTodos.empty();
+
+        if (!anyTodo) {
+            g.DrawString(L"暂无待办", -1, &contentF, PointF((REAL)S(15), y), &gBrush);
+            y += S(20);
         } else {
-            for (const auto &it : displayTodos) {
-                g_HitZones.push_back({Rect(S(15), (int) y, width - S(65), S(35)), it.id, 3, it.uuid});
-                g_HitZones.push_back({Rect(width - S(45), (int) y, S(35), S(35)), it.id, 5, it.uuid});
+            // ── 逾期区块 ──
+            if (!pastTodos.empty()) {
+                SolidBrush sectionBr(Color(200, 255, 100, 80));
+                Font sectionF(&ff, (REAL)S(11), FontStyleRegular, UnitPixel);
+                g.DrawString((L"以往逾期 (" + std::to_wstring(pastTodos.size()) + L")").c_str(),
+                             -1, &sectionF, PointF((REAL)S(15), y), &sectionBr);
+                y += S(18);
+                for (const auto& bk : pastTodos) drawTodoItem(bk, 2);
+            }
 
-                g.DrawRectangle(&linePen, S(15), (int) y + S(6), S(12), S(12));
-                if (it.isDone) g.FillRectangle(&wBrush, S(17), (int) y + S(8), S(8), S(8));
+            // ── 今日区块 ──
+            if (!todayTodos.empty()) {
+                SolidBrush sectionBr(Color(200, 160, 200, 255));
+                Font sectionF(&ff, (REAL)S(11), FontStyleRegular, UnitPixel);
+                g.DrawString((L"今日待办 (" + std::to_wstring(todayTodos.size()) + L")").c_str(),
+                             -1, &sectionF, PointF((REAL)S(15), y), &sectionBr);
+                y += S(18);
+                for (const auto& bk : todayTodos) drawTodoItem(bk, 0);
+            }
 
-                // --- 滚动文字实现 ---
-                std::wstring dispContent = it.content;
-                const size_t MAX_LEN = 5;
-                if (dispContent.length() > MAX_LEN && !it.isDone) {
-                    std::wstring spacer = L"    ";
-                    std::wstring scrollText = dispContent + spacer;
-                    size_t textLen = scrollText.length();
-
-                    const DWORD PAUSE_MS = 5000;
-                    const DWORD SPEED_MS = 300;
-                    DWORD cycleTotalTime = PAUSE_MS + (textLen * SPEED_MS);
-
-                    DWORD currentTime = GetTickCount() % cycleTotalTime;
-                    size_t offset = 0;
-
-                    if (currentTime > PAUSE_MS) {
-                        offset = (currentTime - PAUSE_MS) / SPEED_MS;
-                    }
-
-                    std::wstring doubled = scrollText + scrollText;
-                    dispContent = doubled.substr(offset % textLen, MAX_LEN);
-                } else if (dispContent.length() > MAX_LEN && it.isDone) {
-                    dispContent = dispContent.substr(0, MAX_LEN) + L"...";
-                }
-
-                int style = it.isDone ? FontStyleStrikeout : FontStyleRegular;
-                Font itemF(&ff, (REAL) S(14), style, UnitPixel);
-                g.DrawString(dispContent.c_str(), -1, &itemF, PointF((REAL) S(32), y + S(3)), it.isDone ? &gBrush : &wBrush);
-                g.DrawString(L"[-]", -1, &headF, PointF((REAL)(width - S(40)), y + S(5)), &rBrush);
-
-                float progress = CalculateTodoProgress(it.createdDate, it.dueDate);
-                if (progress >= 0) {
-                    SolidBrush barBg(Color(50, 255, 255, 255));
-                    g.FillRectangle(&barBg, S(32), (int)y + S(24), width - S(90), S(4));
-                    Color progressColor = (progress > 0.85f && !it.isDone) ? Color(255, 255, 100, 100) : Color(255, 80, 220, 80);
-                    SolidBrush barFg(progressColor);
-                    g.FillRectangle(&barFg, S(32), (int)y + S(24), (int)((width - S(90)) * progress), S(4));
-
-                    std::wstring dateLabel = (!it.dueDate.empty()) ?
-                        (it.createdDate.substr(0, 16) + L" 至 " + it.dueDate.substr(11, 5)) :
-                        (L"开始: " + it.createdDate.substr(0, 16));
-
-                    RectF layoutRect(0, 0, (REAL)width, (REAL)S(20));
-                    RectF boundRect;
-                    g.MeasureString(dateLabel.c_str(), -1, &dateF, layoutRect, &boundRect);
-                    float dateX = (float)width - boundRect.Width - S(45);
-                    g.DrawString(dateLabel.c_str(), -1, &dateF, PointF(dateX, y + S(5)), &gBrush);
-                }
-                y += S(35);
+            // ── 未来区块 ──
+            if (!futureTodos.empty()) {
+                SolidBrush sectionBr(Color(180, 140, 160, 180));
+                Font sectionF(&ff, (REAL)S(11), FontStyleRegular, UnitPixel);
+                g.DrawString((L"未来待办 (" + std::to_wstring(futureTodos.size()) + L")").c_str(),
+                             -1, &sectionF, PointF((REAL)S(15), y), &sectionBr);
+                y += S(18);
+                for (const auto& bk : futureTodos) drawTodoItem(bk, 1);
             }
         }
     }
@@ -386,10 +499,34 @@ void ResizeWidget() {
     int appRows = std::min((int)g_AppUsage.size(), g_TopAppsCount);
     h += S(30) + (appRows == 0 ? S(20) : appRows * S(20));
 
-    // 仅计算未完成事项的高度
-    int activeTodos = 0;
-    for (const auto& t : g_Todos) if (!t.isDone) activeTodos++;
-    h += S(30) + (activeTodos == 0 ? S(20) : activeTodos * S(35));
+    // 待办三区块：逾期/今日/未来，各 S(42) + 区块标题 S(18)
+    {
+        time_t tNow = time(nullptr);
+        struct tm nowTm; localtime_s(&nowTm, &tNow);
+        nowTm.tm_hour=0; nowTm.tm_min=0; nowTm.tm_sec=0;
+        time_t tTodayStart = mktime(&nowTm);
+        time_t tTodayEnd   = tTodayStart + 86399;
+
+        int pastCnt=0, todayCnt=0, futureCnt=0;
+        for (const auto& t : g_Todos) {
+            if (t.isDone) continue;
+            if (t.dueDate.empty()) { todayCnt++; continue; }
+            int yr=0,mo=0,dy=0,hr=0,mn=0;
+            swscanf(t.dueDate.c_str(), L"%d-%d-%d %d:%d",&yr,&mo,&dy,&hr,&mn);
+            struct tm tm={}; tm.tm_year=yr-1900;tm.tm_mon=mo-1;tm.tm_mday=dy;
+            tm.tm_hour=hr;tm.tm_min=mn;tm.tm_sec=59;tm.tm_isdst=-1;
+            time_t td = mktime(&tm);
+            if (td < tTodayStart) pastCnt++;
+            else if (td > tTodayEnd) futureCnt++;
+            else todayCnt++;
+        }
+        int todoH = S(30); // 标题行
+        if (pastCnt > 0)   todoH += S(18) + pastCnt   * S(42);
+        if (todayCnt > 0)  todoH += S(18) + todayCnt  * S(42);
+        if (futureCnt > 0) todoH += S(18) + futureCnt * S(42);
+        if (pastCnt + todayCnt + futureCnt == 0) todoH += S(20);
+        h += todoH;
+    }
 
     h += S(25); if (h < S(180)) h = S(180);
     RECT rc; GetWindowRect(g_hWidgetWnd, &rc);
@@ -498,101 +635,43 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         } break;
         case WM_RBUTTONUP: {
             POINT pt; GetCursorPos(&pt);
-
-            static time_t s_lastFetchTime = 0;
-            static bool s_isOffline = true;
-            time_t now = time(nullptr);
-
-            // 5 分钟 (300秒) 触发一次限制逻辑
-            if (now - s_lastFetchTime >= 300) {
-                s_isOffline = !ApiFetchUserStatus();
-                s_lastFetchTime = now;
-            }
-
             HMENU hMenu = CreatePopupMenu();
-
-            // 顶部：展示账户信息与等级 (置灰项)
-            std::wstring accInfo = L"账号: " + (g_Username.empty() ? L"未登录" : g_Username) + L" (" + g_UserTier + L")";
-            AppendMenuW(hMenu, MF_DISABLED | MF_GRAYED, 0, accInfo.c_str());
-
-            std::wstring syncInfo = L"今日同步进度: " + std::to_wstring(g_SyncCount) + L" / " + std::to_wstring(g_SyncLimit);
-            if (s_isOffline) {
-                syncInfo += L" (离线/非最新)";
-            }
-            AppendMenuW(hMenu, MF_DISABLED | MF_GRAYED, 0, syncInfo.c_str());
+            AppendMenuW(hMenu, MF_STRING, 2001, L"⚙  设置");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-
-            HMENU hTopSub = CreatePopupMenu();
-            AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 3 ? MF_CHECKED : 0), 3003, L"前 3");
-            AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 5 ? MF_CHECKED : 0), 3005, L"前 5");
-            AppendMenuW(hTopSub, MF_STRING | (g_TopAppsCount == 10 ? MF_CHECKED : 0), 3010, L"前 10");
-            AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hTopSub, L"统计排名展示");
-
-            HMENU hFreqSub = CreatePopupMenu();
-            AppendMenuW(hFreqSub, MF_STRING | (g_SyncInterval <= 0 ? MF_CHECKED : 0), 4000, L"从不");
-            AppendMenuW(hFreqSub, MF_STRING | (g_SyncInterval == 5 ? MF_CHECKED : 0), 4005, L"每 5 分钟");
-            AppendMenuW(hFreqSub, MF_STRING | (g_SyncInterval == 10 ? MF_CHECKED : 0), 4010, L"每 10 分钟");
-            AppendMenuW(hFreqSub, MF_STRING | (g_SyncInterval == 30 ? MF_CHECKED : 0), 4030, L"每 30 分钟");
-            AppendMenuW(hFreqSub, MF_STRING | (g_SyncInterval == 60 ? MF_CHECKED : 0), 4060, L"每小时");
-            AppendMenuW(hFreqSub, MF_SEPARATOR, 0, NULL);
-
-            std::wstring customLabel = L"自定义分钟...";
-            bool isPreset = (g_SyncInterval == 0 || g_SyncInterval == 5 || g_SyncInterval == 10 || g_SyncInterval == 30 || g_SyncInterval == 60);
-            if (!isPreset && g_SyncInterval > 0) {
-                customLabel = L"自定义: " + std::to_wstring(g_SyncInterval) + L" 分钟";
-            }
-            AppendMenuW(hFreqSub, MF_STRING | (!isPreset ? MF_CHECKED : 0), 4999, customLabel.c_str());
-            AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hFreqSub, L"自动同步频率");
-
+            AppendMenuW(hMenu, MF_STRING, 2002, L"📊  屏幕时间统计");
+            AppendMenuW(hMenu, MF_STRING, 2003, L"⚡  立即同步");
+            AppendMenuW(hMenu, MF_STRING, 2004, L"🔍  检查更新");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(hMenu, 0, 1001, L"立即同步");
-            AppendMenuW(hMenu, 0, 1004, L"屏幕时间统计报告");
-            AppendMenuW(hMenu, 0, 1002, L"检查更新");
-            AppendMenuW(hMenu, 0, 1005, L"退出账号");
-            AppendMenuW(hMenu, 0, 1003, L"退出程序");
+            AppendMenuW(hMenu, MF_STRING, 2005, L"退出程序");
 
             int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD, pt.x, pt.y, 0, hWnd, NULL);
+            DestroyMenu(hMenu);
 
-            if (cmd >= 3003 && cmd <= 3010) {
-                g_TopAppsCount = (cmd == 3003) ? 3 : (cmd == 3005 ? 5 : 10);
-                ResizeWidget();
-            }
-            else if (cmd >= 4000 && cmd <= 4060) {
-                g_SyncInterval = (cmd - 4000);
-                SaveLoginConfig(g_SavedEmail.c_str(), g_SavedPass.c_str(), !g_SavedPass.empty(), g_AutoLogin);
-            }
-            else if (cmd == 4999) {
-                std::wstring minStr = std::to_wstring(g_SyncInterval);
-                std::wstring d1, d2;
-                if (ShowInputDialog(hWnd, 2, minStr, d1, d2)) {
-                    int val = _wtoi(minStr.c_str());
-                    if (val >= 0) {
-                        g_SyncInterval = val;
-                        SaveLoginConfig(g_SavedEmail.c_str(), g_SavedPass.c_str(), !g_SavedPass.empty(), g_AutoLogin);
-                    }
-                }
-            }
-            else if (cmd == 1001) SyncData();
-            else if (cmd == 1004) ShowStatsWindow(hWnd);
-            else if (cmd == 1002) CheckForUpdates(true);
-            else if (cmd == 1005) {
-                g_UserId = 0; g_Username = L""; g_LoginSuccess = false;
+            if      (cmd == 2001) ShowSettingsWindow(hWnd);
+            else if (cmd == 2002) ShowStatsWindow(hWnd);
+            else if (cmd == 2003) std::thread([]() { SyncData(); }).detach();
+            else if (cmd == 2004) CheckForUpdates(true);
+            else if (cmd == 2005) PostQuitMessage(0);
+        } break;
+
+        // 来自设置窗口的退出登录请求（id=9001）
+        case WM_COMMAND: {
+            if (LOWORD(wp) == 9001) {
+                g_UserId = 0; g_Username = L""; g_AuthToken = L""; g_LoginSuccess = false;
                 {
                     std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
                     g_Todos.clear(); g_Countdowns.clear(); g_AppUsage.clear();
                 }
                 ShowWindow(hWnd, SW_HIDE);
                 if (ShowLogin(true)) {
-                    SyncData();
+                    std::thread([]() { SyncData(); }).detach();
                     ShowWindow(hWnd, SW_SHOW);
                 } else {
                     PostQuitMessage(0);
                 }
             }
-            else if (cmd == 1003) PostQuitMessage(0);
-
-            DestroyMenu(hTopSub); DestroyMenu(hFreqSub); DestroyMenu(hMenu);
         } break;
+
         case WM_USER_REFRESH: case WM_USER_TICK: ResizeWidget(); break;
         case WM_DESTROY: KillTimer(hWnd, SCROLL_TIMER_ID); PostQuitMessage(0); break;
         default: return DefWindowProc(hWnd, msg, wp, lp);

@@ -17,8 +17,10 @@ add_executable(MathQuizLite
         completed_todos_window.cpp
         weekly_view_window.cpp
         weekly_view_window.h
+        settings_window.h
+        settings_window.cpp
         resource.h
-        resources.rc  # <--- 新增这行
+        resources.rc
 )
 
 # 强制指定为 Windows GUI 子系统，隐藏控制台窗口
@@ -29,6 +31,7 @@ target_link_libraries(MathQuizLite
         crypt32
         gdiplus
         shlwapi
+        comctl32
         user32
         kernel32
         gdi32
