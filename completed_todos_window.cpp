@@ -12,6 +12,7 @@ struct CompHitZone {
     RectF rect;
     int id;
     int action; // 1: 恢复, 2: 删除
+    std::wstring uuid; // 🚀 新增：用于新架构下精准匹配
 };
 
 static int g_CompScrollY = 0;
@@ -49,7 +50,7 @@ void DrawCompletedTodos(Graphics& g, int width, int height) {
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
 
-    FontFamily ff(L"MiSans");
+    FontFamily ff(L"Microsoft YaHei");
     Font titleF(&ff, (REAL)S(22), FontStyleBold, UnitPixel);
     Font normalF(&ff, (REAL)S(16), FontStyleRegular, UnitPixel);
     Font strikeF(&ff, (REAL)S(16), FontStyleStrikeout, UnitPixel);
@@ -128,13 +129,13 @@ void DrawCompletedTodos(Graphics& g, int width, int height) {
             SolidBrush restBg(Color(30, 74, 108, 247));
             g.FillPath(&restBg, &pRest);
             g.DrawString(L"恢复", -1, &smallF, btnRest, &centerF, &accentBrush);
-            g_CompHitZones.push_back(CompHitZone{btnRest, it.id, 1}); // 显式初始化
+            g_CompHitZones.push_back(CompHitZone{btnRest, it.id, 1, it.uuid});
 
             // 删除按钮 (浅红底色 + 深红字)
             SolidBrush delBg(Color(30, 231, 76, 60));
             g.FillPath(&delBg, &pDel);
             g.DrawString(L"删除", -1, &smallF, btnDel, &centerF, &redBrush);
-            g_CompHitZones.push_back(CompHitZone{btnDel, it.id, 2}); // 显式初始化
+            g_CompHitZones.push_back(CompHitZone{btnDel, it.id, 2, it.uuid});
 
             y += cardH + S(15);
         }
@@ -185,21 +186,48 @@ LRESULT CALLBACK CompletedTodosWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp
                 }
 
                 if (actionId == 1) { // 恢复
+                    // 优先用 uuid 找到真实 id
+                    std::wstring targetUuid;
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
+                        for (const auto& z : g_CompHitZones) {
+                            if (z.id == targetTodoId) { targetUuid = z.uuid; break; }
+                        }
+                    }
                     // 乐观更新 UI 以获得即时反馈
                     {
                         std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
-                        for(auto& t : g_Todos) if(t.id == targetTodoId) t.isDone = false;
+                        for (auto& t : g_Todos) {
+                            if ((!targetUuid.empty() && t.uuid == targetUuid) || t.id == targetTodoId) {
+                                t.isDone = false;
+                                break;
+                            }
+                        }
                     }
                     InvalidateRect(hWnd, NULL, FALSE);
                     // 后台发起 API 同步
-                    ApiToggleTodo(targetTodoId, false);
+                    if (!targetUuid.empty())
+                        ApiToggleTodoByUuid(targetUuid, false);
+                    else
+                        ApiToggleTodo(targetTodoId, false);
                     SyncData();
                 }
                 else if (actionId == 2) { // 彻底删除
                     if (MessageBoxW(hWnd, L"确定要彻底删除这条已完成的事项吗？", L"确认删除", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                        std::wstring targetUuid;
                         {
                             std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
-                            g_Todos.erase(std::remove_if(g_Todos.begin(), g_Todos.end(), [targetTodoId](const auto& t){ return t.id == targetTodoId; }), g_Todos.end());
+                            for (const auto& z : g_CompHitZones) {
+                                if (z.id == targetTodoId) { targetUuid = z.uuid; break; }
+                            }
+                        }
+                        // 乐观从列表移除
+                        {
+                            std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
+                            g_Todos.erase(std::remove_if(g_Todos.begin(), g_Todos.end(),
+                                [targetTodoId, &targetUuid](const auto& t) {
+                                    return (!targetUuid.empty() && t.uuid == targetUuid) || t.id == targetTodoId;
+                                }), g_Todos.end());
                         }
                         InvalidateRect(hWnd, NULL, FALSE);
                         ApiDeleteTodo(targetTodoId);

@@ -53,19 +53,23 @@ void CleanupCustomFont();
 
 struct Todo {
     int id;
+    std::wstring uuid;       // 🚀 新增：后端 UUID，用于 Delta Sync 去重
     std::wstring content;
     bool isDone;
     time_t lastUpdated;
     std::wstring createdDate;
     std::wstring dueDate;
+    bool isDirty = false;    // 🚀 新增：本地有修改尚未上传时为 true
 };
 
 struct Countdown {
     int id;
+    std::wstring uuid;       // 🚀 新增：后端 UUID
     std::wstring title;
     std::wstring dateStr;
     int daysLeft;
     time_t lastUpdated;
+    bool isDirty = false;    // 🚀 新增：本地有修改尚未上传时为 true
 };
 
 struct Course {
@@ -91,6 +95,7 @@ struct HitZone {
     Gdiplus::Rect rect;
     int id;
     int type;
+    std::wstring uuid; // 🚀 新增：用于新架构下精准匹配 Todo/Countdown
 };
 
 // --- 🚀 全局变量声明 (仅声明，不分配内存) ---
@@ -109,6 +114,15 @@ extern std::wstring g_Username;
 extern std::wstring g_SavedEmail;
 extern std::wstring g_SavedPass;
 extern HWND g_hWidgetWnd;
+
+// 🚀 新增：鉴权 Token（登录后由服务器返回，存入内存，不持久化）
+extern std::wstring g_AuthToken;
+
+// 🚀 新增：本机设备唯一标识（首次运行时生成并持久化到 INI）
+extern std::wstring g_DeviceId;
+
+// 🚀 新增：上次成功同步的服务器时间戳（UTC ms），用于 Delta Sync
+extern long long g_LastSyncTime;
 
 // 界面与配置
 extern std::recursive_mutex g_DataMutex;

@@ -12,6 +12,11 @@ std::wstring g_SavedEmail;
 std::wstring g_SavedPass;
 HWND g_hWidgetWnd = NULL;
 
+// 🚀 新增全局变量
+std::wstring g_AuthToken;       // 登录后由服务器返回的 HMAC Bearer Token
+std::wstring g_DeviceId;        // 本机唯一设备 ID，持久化在 INI 中
+long long    g_LastSyncTime = 0; // 上次成功同步的服务器时间戳（UTC ms）
+
 std::recursive_mutex g_DataMutex;
 float g_Scale = 1.0f;
 BYTE g_BgAlpha = 100;

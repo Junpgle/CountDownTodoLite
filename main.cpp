@@ -209,13 +209,11 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
     // 加载用户设置
     LoadSettings();
 
-    // 尝试执行自动登录逻辑
-    if (!AttemptAutoLogin()) {
-        if (!ShowLogin()) {
-            CleanupCustomFont(); // 退出前清理
-            Gdiplus::GdiplusShutdown(gt);
-            return 0;
-        }
+    // 显示登录窗口（若已保存自动登录凭据则自动静默登录，否则显示登录界面）
+    if (!ShowLogin(false)) {
+        CleanupCustomFont(); // 退出前清理
+        Gdiplus::GdiplusShutdown(gt);
+        return 0;
     }
 
     // --- 启动 Tai 数据读取线程 ---
@@ -241,7 +239,11 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
     if (g_hWidgetWnd) {
         ShowWindow(g_hWidgetWnd, nC);
         UpdateWindow(g_hWidgetWnd);
-        ResizeWidget();
+
+        // 🚀 先从本地缓存加载上次同步的数据，让界面立即显示内容，无需等待网络
+        LoadLocalData();
+        LoadLocalCourses();
+        ResizeWidget(); // 立即用缓存数据渲染一次，用户马上看到内容
 
         // --- 程序启动时立即进行一次云端数据同步 ---
         std::thread([]() {

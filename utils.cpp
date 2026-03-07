@@ -162,6 +162,12 @@ void LoadSettings() {
     } else {
         g_DeviceName = L"UnknownDevice";
     }
+
+    // 🚀 新增：加载/生成 DeviceId
+    g_DeviceId = EnsureDeviceId();
+
+    // 🚀 新增：加载上次同步时间戳
+    g_LastSyncTime = LoadLastSyncTime();
 }
 
 void SaveSettings(int uid, const std::wstring &name, const std::wstring &email, const std::wstring &pass, bool savePass) {
@@ -217,3 +223,115 @@ std::wstring GetTodayDate() {
     swprintf_s(buf, L"%04d-%02d-%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
     return buf;
 }
+
+// ============================================================
+// 🚀 新增：DeviceId 管理
+// ============================================================
+
+// 生成一个简单的伪 UUID（基于机器名 + 随机数，格式 xxxx-xxxx-xxxx-xxxx）
+static std::wstring GenerateDeviceId() {
+    WCHAR compName[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+    DWORD len = MAX_COMPUTERNAME_LENGTH + 1;
+    GetComputerNameW(compName, &len);
+
+    // 混合机器名 hash + 随机数
+    unsigned long long h = 5381;
+    for (WCHAR *p = compName; *p; ++p) h = ((h << 5) + h) ^ (unsigned long long)(*p);
+
+    srand((unsigned int)(h ^ (unsigned int)time(nullptr)));
+    wchar_t buf[40];
+    swprintf_s(buf, L"%04x%04x-%04x-%04x-%04x-%04x%04x%04x",
+        (unsigned)(h & 0xFFFF), (unsigned)rand() & 0xFFFF,
+        (unsigned)rand() & 0xFFFF, (unsigned)rand() & 0xFFFF,
+        (unsigned)rand() & 0xFFFF,
+        (unsigned)rand() & 0xFFFF, (unsigned)rand() & 0xFFFF, (unsigned)rand() & 0xFFFF);
+    return buf;
+}
+
+std::wstring EnsureDeviceId() {
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+
+    WCHAR buf[64] = {0};
+    GetPrivateProfileStringW(L"Device", L"DeviceId", L"", buf, 64, path);
+    if (buf[0] != L'\0') return buf;
+
+    // 首次运行：生成并持久化
+    std::wstring newId = GenerateDeviceId();
+    WritePrivateProfileStringW(L"Device", L"DeviceId", newId.c_str(), path);
+    return newId;
+}
+
+// ============================================================
+// 🚀 新增：LastSyncTime 持久化
+// ============================================================
+
+long long LoadLastSyncTime() {
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+
+    WCHAR buf[32] = {0};
+    GetPrivateProfileStringW(L"Sync", L"LastSyncTime", L"0", buf, 32, path);
+    return wtoll(buf);
+}
+
+void SaveLastSyncTime(long long tsMs) {
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+
+    WritePrivateProfileStringW(L"Sync", L"LastSyncTime", std::to_wstring(tsMs).c_str(), path);
+}
+
+// ============================================================
+// 🚀 新增：时间戳 <-> 日期字符串 互转
+// ============================================================
+
+long long DateStringToUtcMs(const std::wstring &dateStr) {
+    if (dateStr.empty()) return 0;
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0;
+    int cnt = swscanf(dateStr.c_str(), L"%d-%d-%d %d:%d", &y, &mo, &d, &h, &mi);
+    if (cnt < 3) return 0;
+
+    struct tm t = {0};
+    t.tm_year = y - 1900;
+    t.tm_mon  = mo - 1;
+    t.tm_mday = d;
+    t.tm_hour = h;
+    t.tm_min  = mi;
+    t.tm_sec  = 0;
+    t.tm_isdst = -1;
+    // mktime 返回本地时间的 time_t，转 UTC ms
+    time_t local = mktime(&t);
+    if (local == -1) return 0;
+    return (long long)local * 1000LL;
+}
+
+std::wstring UtcMsToDateString(long long tsMs) {
+    if (tsMs <= 0) return L"";
+    time_t t = (time_t)(tsMs / 1000LL);
+    struct tm lt;
+    localtime_s(&lt, &t);
+    wchar_t buf[32];
+    swprintf_s(buf, L"%04d-%02d-%02d %02d:%02d",
+        lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday,
+        lt.tm_hour, lt.tm_min);
+    return buf;
+}
+
+std::wstring UtcMsToDateOnly(long long tsMs) {
+    if (tsMs <= 0) return L"";
+    time_t t = (time_t)(tsMs / 1000LL);
+    struct tm lt;
+    localtime_s(&lt, &t);
+    wchar_t buf[16];
+    swprintf_s(buf, L"%04d-%02d-%02d", lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+    return buf;
+}
+
+

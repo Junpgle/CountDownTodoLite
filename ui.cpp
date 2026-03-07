@@ -311,8 +311,8 @@ void RenderWidget() {
             g.DrawString(L"暂无待办", -1, &contentF, PointF((REAL) S(15), y), &gBrush);
         } else {
             for (const auto &it : displayTodos) {
-                g_HitZones.push_back({Rect(S(15), (int) y, width - S(65), S(35)), it.id, 3});
-                g_HitZones.push_back({Rect(width - S(45), (int) y, S(35), S(35)), it.id, 5});
+                g_HitZones.push_back({Rect(S(15), (int) y, width - S(65), S(35)), it.id, 3, it.uuid});
+                g_HitZones.push_back({Rect(width - S(45), (int) y, S(35), S(35)), it.id, 5, it.uuid});
 
                 g.DrawRectangle(&linePen, S(15), (int) y + S(6), S(12), S(12));
                 if (it.isDone) g.FillRectangle(&wBrush, S(17), (int) y + S(8), S(8), S(8));
@@ -421,12 +421,49 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                     }
                     else if (z.type == 3) {
                         if (x < S(30)) {
-                            bool done = false; { std::lock_guard<std::recursive_mutex> l(g_DataMutex); for(auto &t:g_Todos) if(t.id==z.id) done=t.isDone; }
-                            ApiToggleTodo(z.id, !done);
+                            // 切换完成状态：优先用 uuid 匹配
+                            bool done = false;
+                            int matchId = z.id;
+                            std::wstring matchUuid = z.uuid;
+                            {
+                                std::lock_guard<std::recursive_mutex> l(g_DataMutex);
+                                for (auto &t : g_Todos) {
+                                    if ((!matchUuid.empty() && t.uuid == matchUuid) || t.id == matchId) {
+                                        done      = t.isDone;
+                                        matchId   = t.id;
+                                        matchUuid = t.uuid;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matchUuid.empty())
+                                ApiToggleTodoByUuid(matchUuid, !done);
+                            else
+                                ApiToggleTodo(matchId, !done);
                         } else {
-                            std::wstring c, d1, d2; bool currentDone = false;
-                            { std::lock_guard<std::recursive_mutex> l(g_DataMutex); for(auto &t:g_Todos) if(t.id==z.id) { c=t.content; d1=t.createdDate; d2=t.dueDate; currentDone=t.isDone; } }
-                            if (ShowInputDialog(hWnd, 0, c, d1, d2)) { ApiAddTodo(c, d1, d2, currentDone); }
+                            // 编辑待办：用 uuid 查找原始数据
+                            std::wstring c, d1, d2;
+                            bool currentDone = false;
+                            std::wstring foundUuid = z.uuid;
+                            int foundId = z.id;
+                            {
+                                std::lock_guard<std::recursive_mutex> l(g_DataMutex);
+                                for (auto &t : g_Todos) {
+                                    if ((!foundUuid.empty() && t.uuid == foundUuid) || t.id == foundId) {
+                                        c           = t.content;
+                                        d1          = t.createdDate;
+                                        d2          = t.dueDate;
+                                        currentDone = t.isDone;
+                                        foundUuid   = t.uuid; // 确保拿到最新 uuid
+                                        foundId     = t.id;
+                                        break;
+                                    }
+                                }
+                            }
+                            // 🚀 修复：编辑完成后调用 ApiUpdateTodo 原地更新，而非 ApiAddTodo 新增
+                            if (ShowInputDialog(hWnd, 0, c, d1, d2)) {
+                                ApiUpdateTodo(foundUuid, c, d1, d2, currentDone);
+                            }
                         }
                         SyncData();
                     }
@@ -434,7 +471,22 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                         if (MessageBoxW(hWnd, L"确定要删除吗？", L"确认", MB_YESNO) == IDYES) { ApiDeleteCountdown(z.id); SyncData(); }
                     }
                     else if (z.type == 5) {
-                        if (MessageBoxW(hWnd, L"确定要删除这条待办吗？", L"确认删除", MB_YESNO | MB_ICONQUESTION) == IDYES) { ApiDeleteTodo(z.id); SyncData(); }
+                        if (MessageBoxW(hWnd, L"确定要删除这条待办吗？", L"确认删除", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                            // 优先用 uuid 找到真实 id
+                            int realId = z.id;
+                            std::wstring delUuid = z.uuid;
+                            {
+                                std::lock_guard<std::recursive_mutex> l(g_DataMutex);
+                                for (auto &t : g_Todos) {
+                                    if ((!delUuid.empty() && t.uuid == delUuid) || t.id == z.id) {
+                                        realId = t.id;
+                                        break;
+                                    }
+                                }
+                            }
+                            ApiDeleteTodo(realId);
+                            SyncData();
+                        }
                     }
                     else if (z.type == 6) { ShowStatsWindow(hWnd); }
                     else if (z.type == 7) { ShowCompletedTodosWindow(hWnd); }
@@ -688,11 +740,35 @@ bool ExecuteLoginWithRetry(HWND hWnd, const WCHAR* email, const WCHAR* password)
 
 LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
     static bool isLoggingIn = false;
+
+    // 保存密码复选框 (ID=103) 状态变化
     if (msg == WM_COMMAND && LOWORD(wp) == 103 && HIWORD(wp) == BN_CLICKED) {
         bool saveChecked = SendDlgItemMessage(hWnd, 103, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        if (!saveChecked) SendDlgItemMessage(hWnd, 104, BM_SETCHECK, BST_UNCHECKED, 0);
+        if (!saveChecked) {
+            // 取消保存密码 → 同时取消自动登录
+            SendDlgItemMessage(hWnd, 104, BM_SETCHECK, BST_UNCHECKED, 0);
+            // 立即从 INI 清除密码（但保留邮箱）
+            WCHAR iniPath[MAX_PATH];
+            GetModuleFileNameW(NULL, iniPath, MAX_PATH);
+            PathRemoveFileSpecW(iniPath);
+            PathAppendW(iniPath, SETTINGS_FILE.c_str());
+            WritePrivateProfileStringW(L"Auth", L"Pass", NULL, iniPath);
+            WritePrivateProfileStringW(L"Auth", L"AutoLogin", L"0", iniPath);
+            g_SavedPass = L""; // 同步清空内存中的密码
+        }
         return 0;
     }
+
+    // 自动登录复选框 (ID=104) 状态变化
+    if (msg == WM_COMMAND && LOWORD(wp) == 104 && HIWORD(wp) == BN_CLICKED) {
+        bool autoChecked = SendDlgItemMessage(hWnd, 104, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (autoChecked) {
+            // 勾选自动登录 → 强制同时勾上保存密码
+            SendDlgItemMessage(hWnd, 103, BM_SETCHECK, BST_CHECKED, 0);
+        }
+        return 0;
+    }
+
     if (msg == WM_COMMAND && LOWORD(wp) == IDOK) {
         if (isLoggingIn) return 0;
         isLoggingIn = true;
@@ -706,7 +782,7 @@ LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (success) {
             g_LoginSuccess = true;
             bool savePass = SendDlgItemMessage(hWnd, 103, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            bool autoLogin = savePass && (SendDlgItemMessage(hWnd, 104, BM_SETCHECK, 0, 0) == BST_CHECKED);
+            bool autoLogin = savePass && (SendDlgItemMessage(hWnd, 104, BM_GETCHECK, 0, 0) == BST_CHECKED);
             SaveLoginConfig(e, p, savePass, autoLogin);
             DestroyWindow(hWnd);
         } else {
@@ -715,13 +791,24 @@ LRESULT CALLBACK LoginWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         isLoggingIn = false; return 0;
     }
-    else if (msg == WM_DESTROY) { if (!g_LoginSuccess) PostQuitMessage(0); }
+    else if (msg == WM_DESTROY) {
+        isLoggingIn = false; // 重置，防止下次打开登录窗时按钮永久失效
+        // 只有在非登录成功的情况下才发退出消息，防止 DestroyWindow 导致误退出
+        if (!g_LoginSuccess) PostQuitMessage(0);
+    }
     return DefWindowProc(hWnd, msg, wp, lp);
 }
 
 bool ShowLogin(bool isManualLogout) {
-    WNDCLASSW wc = {0}; wc.lpfnWndProc = LoginWndProc; wc.hInstance = GetModuleHandle(NULL);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.lpszClassName = L"LoginWndClass"; RegisterClassW(&wc);
+    g_LoginSuccess = false; // 每次显示登录窗口前重置状态，防止残留值导致闪退
+
+    // 防止重复注册 WndClass（第二次退出再登录时会崩溃）
+    static bool s_loginClassRegistered = false;
+    if (!s_loginClassRegistered) {
+        WNDCLASSW wc = {0}; wc.lpfnWndProc = LoginWndProc; wc.hInstance = GetModuleHandle(NULL);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.lpszClassName = L"LoginWndClass";
+        if (RegisterClassW(&wc)) s_loginClassRegistered = true;
+    }
     HWND h = CreateWindowExW(0, L"LoginWndClass", L"MathQuiz 登录", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         (GetSystemMetrics(SM_CXSCREEN) - S(350)) / 2, (GetSystemMetrics(SM_CYSCREEN) - S(250)) / 2,
         S(350), S(250), NULL, NULL, GetModuleHandle(NULL), NULL);
@@ -734,15 +821,41 @@ bool ShowLogin(bool isManualLogout) {
     CreateWindowW(L"BUTTON", L"自动登录", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, S(200), S(110), S(90), S(20), h, (HMENU)104, NULL, NULL);
     CreateWindowW(L"BUTTON", L"登录", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, S(125), S(145), S(100), S(35), h, (HMENU)IDOK, NULL, NULL);
     EnumChildWindows(h, [](HWND ch, LPARAM p){ SendMessage(ch, WM_SETFONT, p, TRUE); return TRUE; }, (LPARAM)hF);
+
     WCHAR savedEmail[128] = {0}, savedPass[128] = {0}; bool savePass = false, autoLogin = false;
     LoadLoginConfig(savedEmail, savedPass, savePass, autoLogin);
-    if (savePass) { SetDlgItemTextW(h, 101, savedEmail); SetDlgItemTextW(h, 102, savedPass); SendDlgItemMessage(h, 103, BM_SETCHECK, BST_CHECKED, 0); }
-    if (autoLogin) {
-        SendDlgItemMessage(h, 104, BM_SETCHECK, BST_CHECKED, 0);
-        if (!isManualLogout) { if (ExecuteLoginWithRetry(h, savedEmail, savedPass)) { g_LoginSuccess = true; DestroyWindow(h); return true; } }
+
+    // 无论是否保存了密码，只要有保存的邮箱就填入（方便用户手动输入密码）
+    if (savedEmail[0] != L'\0') {
+        SetDlgItemTextW(h, 101, savedEmail);
     }
+    if (savePass) {
+        // 保存了密码：填入密码并勾选"保存密码"
+        SetDlgItemTextW(h, 102, savedPass);
+        SendDlgItemMessage(h, 103, BM_SETCHECK, BST_CHECKED, 0);
+    }
+    if (autoLogin) {
+        // 勾选自动登录（无论是否手动退出，都恢复勾选状态供用户确认）
+        SendDlgItemMessage(h, 104, BM_SETCHECK, BST_CHECKED, 0);
+        // 非手动退出时（如程序自启）才执行自动登录
+        if (!isManualLogout && savePass) {
+            if (ExecuteLoginWithRetry(h, savedEmail, savedPass)) {
+                g_LoginSuccess = true;
+                DestroyWindow(h);
+                return true;
+            }
+            // 自动登录失败：不闪退，继续显示登录窗口让用户手动登录
+            // g_LoginSuccess 保持 false，窗口继续显示
+        }
+    }
+
     ShowWindow(h, SW_SHOW); UpdateWindow(h);
-    MSG m; while(GetMessage(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessage(&m); if(!IsWindow(h)) break; }
+    MSG m;
+    while(GetMessage(&m, NULL, 0, 0) > 0) {
+        TranslateMessage(&m);
+        DispatchMessage(&m);
+        if(!IsWindow(h)) break;
+    }
     if (m.message == WM_QUIT) PostQuitMessage((int)m.wParam);
     return g_LoginSuccess;
 }
