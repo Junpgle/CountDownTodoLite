@@ -210,7 +210,23 @@ void SaveTaiDbPathSetting() {
 }
 
 HFONT GetMiSansFont(int s) {
-    return CreateFontW(S(s), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+    static std::wstring fontPath;
+    static bool fontRegistered = false;
+    static bool fontAvailable  = false;
+    if (!fontRegistered) {
+        WCHAR exePath[MAX_PATH];
+        GetModuleFileNameW(NULL, exePath, MAX_PATH);
+        PathRemoveFileSpecW(exePath);
+        PathAppendW(exePath, L"MiSans-Regular.ttf");
+        fontPath = exePath;
+        DWORD cnt = 0;
+        fontAvailable  = (AddFontResourceExW(fontPath.c_str(), FR_PRIVATE, nullptr) != 0);
+        fontRegistered = true;
+    }
+    const wchar_t* faceName = fontAvailable ? L"MiSans" : L"Microsoft YaHei";
+    return CreateFontW(S(s), 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                       DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY,
+                       DEFAULT_PITCH | FF_SWISS, faceName);
 }
 
 

@@ -50,7 +50,7 @@ void DrawCompletedTodos(Graphics& g, int width, int height) {
     g.SetSmoothingMode(SmoothingModeAntiAlias);
     g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
 
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font titleF(&ff, (REAL)S(22), FontStyleBold, UnitPixel);
     Font normalF(&ff, (REAL)S(16), FontStyleRegular, UnitPixel);
     Font strikeF(&ff, (REAL)S(16), FontStyleStrikeout, UnitPixel);

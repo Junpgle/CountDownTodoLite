@@ -216,7 +216,7 @@ void DrawDashboard(Graphics& g, int width, int height) {
     g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
 
     // --- 修改点：将 MiSans 替换为 Microsoft YaHei ---
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font titleF(&ff, (REAL)S(24), FontStyleBold, UnitPixel);
     Font bigTimeF(&ff, (REAL)S(32), FontStyleBold, UnitPixel);
     Font cardTitleF(&ff, (REAL)S(18), FontStyleBold, UnitPixel);

@@ -136,7 +136,7 @@ static float DrawCard(Graphics& g, float x, float y, float w, float h, const wch
     Pen border(C_BORDER, 1.0f);
     g.DrawPath(&border, &path);
 
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font fTitle(&ff, (REAL)S(12), FontStyleBold, UnitPixel);
     SolidBrush tb(C_ACCENT);
     // 标题限定在卡片宽度内
@@ -158,7 +158,7 @@ static float DrawCard(Graphics& g, float x, float y, float w, float h, const wch
 // ============================================================
 static void DrawRow(Graphics& g, float x, float y, float w,
                     const wchar_t* label, const wchar_t* value = nullptr) {
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font fLabel(&ff, (REAL)S(13), FontStyleBold, UnitPixel);
     Font fValue(&ff, (REAL)S(12), FontStyleRegular, UnitPixel);
     SolidBrush lb(C_TEXT), vb(C_SUB);
@@ -195,7 +195,7 @@ static void DrawButton(Graphics& g, float x, float y, float w, float h,
     RoundRect(path, r, (REAL)S(7));
     SolidBrush bgBrush(bg);
     g.FillPath(&bgBrush, &path);
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font fBtn(&ff, (REAL)S(13), FontStyleRegular, UnitPixel);
     SolidBrush fgBrush(fg);
     StringFormat sf;
@@ -247,9 +247,7 @@ static void DestroyPageControls() {
 // 内部辅助：确保子控件字体已设置
 static void EnsureFont() {
     if (!s_hFont) {
-        s_hFont = CreateFontW(S(13), 0, 0, 0, FW_NORMAL, 0, 0, 0,
-            DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei");
+        s_hFont = GetMiSansFont(13);
     }
 }
 
@@ -261,7 +259,7 @@ static void DrawPageAppearance(Graphics& g, float cx, float cy, float cw, float 
     float iy = DrawCard(g, x, y, w, (REAL)S(115), L"窗口透明度");
 
     // 当前百分比文字
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font fSub(&ff, (REAL)S(12), FontStyleRegular, UnitPixel);
     SolidBrush subBr(C_SUB);
     std::wstring pct = std::to_wstring((int)(g_BgAlpha / 255.0f * 100)) + L"%";
@@ -316,7 +314,7 @@ static void DrawPageDatasource(Graphics& g, float cx, float cy, float cw, float 
 
     float iy = DrawCard(g, x, y, w, (REAL)S(140), L"Tai 屏幕时间数据库路径");
 
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font fSub(&ff, (REAL)S(12), FontStyleRegular, UnitPixel);
     SolidBrush subBr(C_SUB);
 
@@ -372,7 +370,7 @@ static void DrawPageAccount(Graphics& g, float cx, float cy, float cw, float ch)
     float passCardH = (REAL)S(220);
     iy = DrawCard(g, x, y, w, passCardH, L"修改密码");
 
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font fLabel(&ff, (REAL)S(12), FontStyleBold, UnitPixel);
     SolidBrush lb(C_TEXT);
 
@@ -490,7 +488,7 @@ static void DrawPageSync(Graphics& g, float cx, float cy, float cw, float ch) {
 
     // 同步中状态提示
     if (!s_StatusMsg.empty() && s_Page == PAGE_SYNC) {
-        FontFamily ff(L"Microsoft YaHei");
+        FontFamily& ff = *g_MiSansFamily;
         Font fStatus(&ff, (REAL)S(12), FontStyleRegular, UnitPixel);
         SolidBrush sb(s_StatusOk ? C_GREEN : C_RED);
         RectF stRect(x + S(8), y + S(48), w, (REAL)S(20));
@@ -505,7 +503,7 @@ static void DrawPageData(Graphics& g, float cx, float cy, float cw, float ch) {
 
     float iy = DrawCard(g, x, y, w, (REAL)S(155), L"云端数据操作");
 
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font fSub(&ff, (REAL)S(12), FontStyleRegular, UnitPixel);
     SolidBrush subBr(C_SUB);
 
@@ -534,7 +532,7 @@ static void DrawPageAbout(Graphics& g, float cx, float cy, float cw, float ch) {
 
     float iy = DrawCard(g, x, y, w, (REAL)S(215), L"关于 MathQuizLite");
 
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font fBig(&ff, (REAL)S(24), FontStyleBold, UnitPixel);
     Font fSub(&ff, (REAL)S(12), FontStyleRegular, UnitPixel);
     SolidBrush acBr(C_ACCENT), subBr(C_SUB), textBr(C_TEXT);
@@ -591,7 +589,7 @@ static void DrawSettings(Graphics& g, int width, int height) {
     g.DrawLine(&borderPen, (REAL)navW - 0.5f, 0.0f, (REAL)navW - 0.5f, (REAL)height);
 
     // App 标题区
-    FontFamily ff(L"Microsoft YaHei");
+    FontFamily& ff = *g_MiSansFamily;
     Font fAppTitle(&ff, (REAL)S(14), FontStyleBold, UnitPixel);
     SolidBrush acBr(C_ACCENT), textBr(C_TEXT);
     g.DrawString(L"设置", -1, &fAppTitle, PointF((REAL)S(20), (REAL)S(20)), &acBr);

@@ -34,6 +34,10 @@ bool g_LoginSuccess = false;
 std::wstring g_TaiDbPath;
 std::wstring g_DeviceName;
 
+// GDI+ 字体
+Gdiplus::PrivateFontCollection g_FontCollection;
+Gdiplus::FontFamily* g_MiSansFamily = nullptr;
+
 // 数据列表
 std::vector<Todo> g_Todos;
 std::vector<Countdown> g_Countdowns;

@@ -16,16 +16,40 @@ using json = nlohmann::json;
 #pragma comment(lib, "winhttp.lib")
 
 // =========================================================
-// 🚀 字体相关全局变量与函数 (现已改用系统默认字体：微软雅黑)
+// 🚀 字体初始化：从 MiSans-Regular.ttf 加载私有字体
+//    g_MiSansFamily / g_FontCollection 定义在 common.cpp
 // =========================================================
-// 保留变量名以防其它文件 (如 ui.cpp) 报错，但实际使用的是微软雅黑
-Gdiplus::FontFamily* g_MiSansFamily = nullptr;
-
 void InitCustomFont() {
-    // 放弃使用不稳定的内存字体，直接使用系统自带的微软雅黑
-    g_MiSansFamily = new Gdiplus::FontFamily(L"Microsoft YaHei");
+    // 获取程序所在目录，拼接字体文件路径
+    WCHAR exePath[MAX_PATH];
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    for (int i = (int)wcslen(exePath) - 1; i >= 0; --i) {
+        if (exePath[i] == L'\\' || exePath[i] == L'/') { exePath[i+1] = L'\0'; break; }
+    }
+    std::wstring fontPath = std::wstring(exePath) + L"MiSans-Regular.ttf";
 
-    // 容错降级检查：如果用户的精简版系统连微软雅黑都没有，回退到黑体
+    // 尝试从文件加载私有字体集合
+    bool loaded = false;
+    if (g_FontCollection.AddFontFile(fontPath.c_str()) == Gdiplus::Ok) {
+        int found = g_FontCollection.GetFamilyCount();
+        if (found > 0) {
+            int count = 0;
+            auto* families = new Gdiplus::FontFamily[found];
+            g_FontCollection.GetFamilies(found, families, &count);
+            if (count > 0) {
+                g_MiSansFamily = families[0].Clone();
+                loaded = (g_MiSansFamily && g_MiSansFamily->GetLastStatus() == Gdiplus::Ok);
+            }
+            delete[] families;
+        }
+    }
+
+    // 回退：微软雅黑
+    if (!loaded) {
+        delete g_MiSansFamily;
+        g_MiSansFamily = new Gdiplus::FontFamily(L"Microsoft YaHei");
+    }
+    // 再回退：黑体
     if (g_MiSansFamily->GetLastStatus() != Gdiplus::Ok) {
         delete g_MiSansFamily;
         g_MiSansFamily = new Gdiplus::FontFamily(L"SimHei");
@@ -33,7 +57,6 @@ void InitCustomFont() {
 }
 
 void CleanupCustomFont() {
-    // 清理 GDI+ 字体资源
     if (g_MiSansFamily) {
         delete g_MiSansFamily;
         g_MiSansFamily = nullptr;
