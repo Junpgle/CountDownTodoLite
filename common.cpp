@@ -37,6 +37,7 @@ std::wstring g_DeviceName;
 // GDI+ 字体
 Gdiplus::PrivateFontCollection g_FontCollection;
 Gdiplus::FontFamily* g_MiSansFamily = nullptr;
+std::wstring g_FontName = L"MiSans"; // 默认 MiSans，由设置界面覆盖
 
 // 数据列表
 std::vector<Todo> g_Todos;

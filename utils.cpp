@@ -154,6 +154,11 @@ void LoadSettings() {
 
     g_TopAppsCount = GetPrivateProfileIntW(L"Settings", L"TopAppsCount", 3, path);
 
+    // 字体名（MiSans / Microsoft YaHei / SimHei）
+    WCHAR fontNameBuf[128] = {0};
+    GetPrivateProfileStringW(L"Settings", L"FontName", L"MiSans", fontNameBuf, 128, path);
+    g_FontName = fontNameBuf;
+
     // 获取本机计算机名称作为设备名
     WCHAR compName[MAX_COMPUTERNAME_LENGTH + 1];
     DWORD compNameLen = sizeof(compName) / sizeof(WCHAR);
@@ -198,6 +203,7 @@ void SaveAlphaSetting() {
 
     WritePrivateProfileStringW(L"Settings", L"BgAlpha", std::to_wstring(g_BgAlpha).c_str(), path);
     WritePrivateProfileStringW(L"Settings", L"TopAppsCount", std::to_wstring(g_TopAppsCount).c_str(), path);
+    WritePrivateProfileStringW(L"Settings", L"FontName", g_FontName.c_str(), path);
 }
 
 void SaveTaiDbPathSetting() {
@@ -223,7 +229,7 @@ HFONT GetMiSansFont(int s) {
         fontAvailable  = (AddFontResourceExW(fontPath.c_str(), FR_PRIVATE, nullptr) != 0);
         fontRegistered = true;
     }
-    const wchar_t* faceName = fontAvailable ? L"MiSans" : L"Microsoft YaHei";
+    const wchar_t* faceName = fontAvailable ? L"MiSans" : L"SimHei";
     return CreateFontW(S(s), 0, 0, 0, FW_NORMAL, 0, 0, 0,
                        DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY,
                        DEFAULT_PITCH | FF_SWISS, faceName);

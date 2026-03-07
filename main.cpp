@@ -16,40 +16,74 @@ using json = nlohmann::json;
 #pragma comment(lib, "winhttp.lib")
 
 // =========================================================
-// 🚀 字体初始化：从 MiSans-Regular.ttf 加载私有字体
-//    g_MiSansFamily / g_FontCollection 定义在 common.cpp
+// 🚀 字体初始化：依据 g_FontName 加载字体
+//    g_MiSansFamily / g_FontCollection / g_FontName 定义在 common.cpp
 // =========================================================
-void InitCustomFont() {
-    // 获取程序所在目录，拼接字体文件路径
+
+// 内部：尝试从 TTF 文件构建 FontFamily，成功返回 true
+static bool TryLoadMiSansFromFile() {
     WCHAR exePath[MAX_PATH];
     GetModuleFileNameW(NULL, exePath, MAX_PATH);
     for (int i = (int)wcslen(exePath) - 1; i >= 0; --i) {
         if (exePath[i] == L'\\' || exePath[i] == L'/') { exePath[i+1] = L'\0'; break; }
     }
     std::wstring fontPath = std::wstring(exePath) + L"MiSans-Regular.ttf";
+    if (g_FontCollection.AddFontFile(fontPath.c_str()) != Gdiplus::Ok) return false;
+    int found = g_FontCollection.GetFamilyCount();
+    if (found <= 0) return false;
+    int count = 0;
+    auto* families = new Gdiplus::FontFamily[found];
+    g_FontCollection.GetFamilies(found, families, &count);
+    Gdiplus::FontFamily* f = (count > 0) ? families[0].Clone() : nullptr;
+    delete[] families;
+    if (!f || f->GetLastStatus() != Gdiplus::Ok) { delete f; return false; }
+    delete g_MiSansFamily;
+    g_MiSansFamily = f;
+    return true;
+}
 
-    // 尝试从文件加载私有字体集合
-    bool loaded = false;
-    if (g_FontCollection.AddFontFile(fontPath.c_str()) == Gdiplus::Ok) {
-        int found = g_FontCollection.GetFamilyCount();
-        if (found > 0) {
+void InitCustomFont() {
+    // 先加载 MiSans TTF（无论当前选择，保证私有集合已注册）
+    bool misansOk = TryLoadMiSansFromFile();
+
+    if (g_FontName == L"MiSans" && misansOk) {
+        return; // 已经加载好了
+    }
+    // 切换到系统字体
+    delete g_MiSansFamily;
+    g_MiSansFamily = new Gdiplus::FontFamily(g_FontName.c_str());
+    if (g_MiSansFamily->GetLastStatus() != Gdiplus::Ok) {
+        // 最终回退：黑体
+        delete g_MiSansFamily;
+        g_MiSansFamily = new Gdiplus::FontFamily(L"SimHei");
+    }
+}
+
+void RebuildFont() {
+    // 重用 TryLoadMiSansFromFile 时需要清空旧的集合句柄；
+    // PrivateFontCollection 不支持清空，这里直接用系统字体路径即可
+    if (g_FontName == L"MiSans") {
+        // 私有集合已在 InitCustomFont 中加载，直接取 family
+        if (g_FontCollection.GetFamilyCount() > 0) {
             int count = 0;
-            auto* families = new Gdiplus::FontFamily[found];
-            g_FontCollection.GetFamilies(found, families, &count);
+            auto* families = new Gdiplus::FontFamily[g_FontCollection.GetFamilyCount()];
+            g_FontCollection.GetFamilies(g_FontCollection.GetFamilyCount(), families, &count);
             if (count > 0) {
-                g_MiSansFamily = families[0].Clone();
-                loaded = (g_MiSansFamily && g_MiSansFamily->GetLastStatus() == Gdiplus::Ok);
+                Gdiplus::FontFamily* f = families[0].Clone();
+                if (f && f->GetLastStatus() == Gdiplus::Ok) {
+                    delete g_MiSansFamily;
+                    g_MiSansFamily = f;
+                    delete[] families;
+                    return;
+                }
+                delete f;
             }
             delete[] families;
         }
     }
-
-    // 回退：微软雅黑
-    if (!loaded) {
-        delete g_MiSansFamily;
-        g_MiSansFamily = new Gdiplus::FontFamily(L"Microsoft YaHei");
-    }
-    // 再回退：黑体
+    // 系统字体
+    delete g_MiSansFamily;
+    g_MiSansFamily = new Gdiplus::FontFamily(g_FontName.c_str());
     if (g_MiSansFamily->GetLastStatus() != Gdiplus::Ok) {
         delete g_MiSansFamily;
         g_MiSansFamily = new Gdiplus::FontFamily(L"SimHei");

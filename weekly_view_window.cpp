@@ -143,7 +143,7 @@ static void RenderWeeklyView(HWND hWnd) {
 
 
         FontFamily* pFF = g_MiSansFamily;
-        FontFamily fallbackFF(L"Microsoft YaHei");
+        FontFamily fallbackFF(L"SimHei");
         if (!pFF || pFF->GetLastStatus() != Ok) {
             pFF = &fallbackFF;
         }

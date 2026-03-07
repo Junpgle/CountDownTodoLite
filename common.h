@@ -45,9 +45,15 @@ extern const wchar_t *APP_NAME;
 extern Gdiplus::PrivateFontCollection g_FontCollection;
 extern Gdiplus::FontFamily* g_MiSansFamily;
 
+// 全局字体名：可选 L"MiSans" / L"Microsoft YaHei" / L"SimHei"
+// 由设置界面写入，InitCustomFont / RebuildFont 读取
+extern std::wstring g_FontName;
+
 // 初始化函数的声明
 void InitCustomFont();
 void CleanupCustomFont();
+// 重建字体（切换字体后调用，无需重启）
+void RebuildFont();
 
 // --- 🚀 数据结构定义 ---
 

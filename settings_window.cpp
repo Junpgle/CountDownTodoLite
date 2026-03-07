@@ -99,6 +99,7 @@ enum HitId {
     HIT_NAV_BASE     = 100,
     HIT_ALPHA_APPLY  = 200,
     HIT_TOP3 = 210, HIT_TOP5 = 211, HIT_TOP10 = 212,
+    HIT_FONT_MISANS  = 215, HIT_FONT_SIMHEI = 217,
     HIT_TAI_BROWSE   = 220,
     HIT_TAI_APPLY    = 221,
     HIT_SYNC_NEVER   = 300, HIT_SYNC_5  = 301, HIT_SYNC_10 = 302,
@@ -300,12 +301,35 @@ static void DrawPageAppearance(Graphics& g, float cx, float cy, float cw, float 
 
     y += S(115) + S(12);
 
-    // 卡片2：统计排名
-    iy = DrawCard(g, x, y, w, (REAL)S(96), L"屏幕时间排名展示数量");
-    float bw = (w - S(32) - S(16)) / 3.0f;
-    DrawOptionBtn(g, x + S(16),                  iy + S(10), bw, (REAL)S(36), L"前 3 名",  g_TopAppsCount == 3,  HIT_TOP3);
-    DrawOptionBtn(g, x + S(16) + bw + S(8),       iy + S(10), bw, (REAL)S(36), L"前 5 名",  g_TopAppsCount == 5,  HIT_TOP5);
-    DrawOptionBtn(g, x + S(16) + (bw + S(8)) * 2, iy + S(10), bw, (REAL)S(36), L"前 10 名", g_TopAppsCount == 10, HIT_TOP10);
+    // 卡片2：字体选择
+    float fontCardH = (REAL)S(96);
+    DrawCard(g, x, y, w, fontCardH, L"界面字体");
+    {
+        float iy2 = y + S(48);
+        float fbw = (w - S(32) - S(8)) / 2.0f; // 只有2个选项
+        struct { const wchar_t* label; const wchar_t* val; int hid; } fonts[2] = {
+            { L"MiSans",  L"MiSans",  HIT_FONT_MISANS  },
+            { L"黑体",    L"SimHei",  HIT_FONT_SIMHEI  },
+        };
+        for (int i = 0; i < 2; i++) {   // ← 改为 i < 2
+            DrawOptionBtn(g,
+                x + S(16) + i * (fbw + S(8)),
+                iy2 + S(10), fbw, (REAL)S(36),
+                fonts[i].label,
+                g_FontName == fonts[i].val,
+                fonts[i].hid);
+        }
+    }
+    y += fontCardH + S(12);
+
+    // 卡片3：统计排名
+    {
+        float iy3 = DrawCard(g, x, y, w, (REAL)S(96), L"屏幕时间排名展示数量");
+        float bw = (w - S(32) - S(16)) / 3.0f;
+        DrawOptionBtn(g, x + S(16),                  iy3 + S(10), bw, (REAL)S(36), L"前 3 名",  g_TopAppsCount == 3,  HIT_TOP3);
+        DrawOptionBtn(g, x + S(16) + bw + S(8),       iy3 + S(10), bw, (REAL)S(36), L"前 5 名",  g_TopAppsCount == 5,  HIT_TOP5);
+        DrawOptionBtn(g, x + S(16) + (bw + S(8)) * 2, iy3 + S(10), bw, (REAL)S(36), L"前 10 名", g_TopAppsCount == 10, HIT_TOP10);
+    }
 }
 
 // --- 数据源页 ---
@@ -665,7 +689,7 @@ static void DrawSettings(Graphics& g, int width, int height) {
 static void ApplyFontToChildren() {
     EnsureFont();
     EnumChildWindows(s_hWnd, [](HWND h, LPARAM p) -> BOOL {
-        SendMessage(h, WM_SETFONT, p, TRUE);
+        SendMessage(h, WM_SETFONT, p, FALSE); // FALSE：不立即重绘，防止递归
         return TRUE;
     }, (LPARAM)s_hFont);
 }
@@ -678,7 +702,8 @@ static void SwitchPage(int page) {
     s_StatusMsg.clear();
     s_Page = page;
     InvalidateRect(s_hWnd, NULL, FALSE);
-    UpdateWindow(s_hWnd);
+    UpdateWindow(s_hWnd);       // 触发 WM_PAINT，子控件在 DrawPageXxx 里创建
+    ApplyFontToChildren();      // 子控件创建完毕后统一设字体
 }
 
 // ============================================================
@@ -711,6 +736,20 @@ static void HandleHit(HWND hWnd, int hitId) {
     case HIT_TOP3:  g_TopAppsCount = 3;  SaveAlphaSetting(); if(g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH,0,0); InvalidateRect(hWnd,NULL,FALSE); break;
     case HIT_TOP5:  g_TopAppsCount = 5;  SaveAlphaSetting(); if(g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH,0,0); InvalidateRect(hWnd,NULL,FALSE); break;
     case HIT_TOP10: g_TopAppsCount = 10; SaveAlphaSetting(); if(g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH,0,0); InvalidateRect(hWnd,NULL,FALSE); break;
+
+    case HIT_FONT_MISANS:  g_FontName = L"MiSans";  goto apply_font;
+    case HIT_FONT_SIMHEI:  g_FontName = L"SimHei";  goto apply_font;
+    apply_font: {
+        SaveAlphaSetting();   // FontName 已随 SaveAlphaSetting 一并写入 INI
+        RebuildFont();        // 立即切换 g_MiSansFamily
+        // 子控件字体也同步更新
+        if (s_hFont) { DeleteObject(s_hFont); s_hFont = NULL; }
+        EnsureFont();
+        ApplyFontToChildren();
+        InvalidateRect(hWnd, NULL, FALSE);
+        if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+        break;
+    }
 
     case HIT_TAI_BROWSE: {
         BROWSEINFOW bi = {0};
@@ -843,6 +882,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM l
     case WM_CREATE:
         s_hWnd = hWnd;
         EnsureFont();
+        PostMessage(hWnd, WM_USER + 1, 0, 0); // 首次绘制后设子控件字体
         break;
 
     case WM_PAINT: {
@@ -857,7 +897,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM l
         SelectObject(mdc, old);
         DeleteObject(mbm); DeleteDC(mdc);
         EndPaint(hWnd, &ps);
-        ApplyFontToChildren();
+        // ⚠️ 不在 WM_PAINT 里调用 ApplyFontToChildren，防止 WM_SETFONT→重绘→WM_PAINT 死循环
         break;
     }
 
@@ -900,6 +940,10 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM l
     }
 
     case WM_COMMAND: break;
+
+    case WM_USER + 1:
+        ApplyFontToChildren();
+        break;
 
     case WM_CLOSE:
         DestroyWindow(hWnd);
@@ -961,4 +1005,7 @@ void ShowSettingsWindow(HWND parent) {
     ShowWindow(h, SW_SHOW);
     UpdateWindow(h);
 }
+
+
+
 
