@@ -11,5 +11,9 @@ std::vector<std::pair<std::wstring, int>> GetTopApps(int topN);
 // 获取今日屏幕总使用时长（秒）
 int GetTotalScreenTime();
 
-// 预留接口：从服务器同步其他设备的屏幕使用时间
-void SyncRemoteScreenTime();
+// 把最新本机数据合并到 g_AppUsage（仅未登录时使用）
+void UpdateMergedUsage();
+
+// 获取本机 Tai 实时应用用量快照（线程安全副本），供 SyncData() 上传使用
+std::map<std::wstring, int> GetLocalAppUsageMapCopy();
+

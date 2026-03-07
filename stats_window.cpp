@@ -1,6 +1,7 @@
 #include "stats_window.h"
 #include "utils.h"
 #include "api.h"
+#include "tai_reader.h"
 #include <map>
 #include <vector>
 #include <string>
@@ -162,6 +163,15 @@ void LoadCacheFromDisk() {
 }
 
 void FetchWeeklyData(HWND hWndNotify) {
+    // 取今天日期字符串，用于判断是否需要用本机 Tai 数据覆盖
+    SYSTEMTIME stNow; GetLocalTime(&stNow);
+    wchar_t todayBuf[20];
+    swprintf_s(todayBuf, L"%04d-%02d-%02d", stNow.wYear, stNow.wMonth, stNow.wDay);
+    std::wstring todayStr = todayBuf;
+
+    // 只在获取今天数据时，用本机 Tai 实时快照覆盖本机条目
+    auto localSnapshot = GetLocalAppUsageMapCopy();
+
     std::vector<DayStats> cloudStats;
     time_t now = time(nullptr);
     for (int i = 6; i >= 0; --i) {
@@ -175,20 +185,55 @@ void FetchWeeklyData(HWND hWndNotify) {
 
         DayStats ds;
         ds.date = dateStr;
+
+        // 建立 app_name → category 映射表（从服务端返回的全部数据中提取，包括本机条目）
+        // 服务端已经 JOIN app_name_mappings，category 字段是准确的
+        std::map<std::wstring, std::wstring> appCategoryMap;
+
         try {
             auto j = json::parse(res);
             if (j.is_array()) {
+                // 第一遍：先建完整的分类映射表（含本机条目）
+                for (auto& item : j) {
+                    std::wstring appName = ToWide(item["app_name"].get<std::string>());
+                    std::wstring cat     = item.contains("category") ? ToWide(item["category"].get<std::string>()) : L"未分类";
+                    if (!appName.empty() && cat != L"未分类") {
+                        appCategoryMap[appName] = cat;
+                    }
+                }
+
+                // 第二遍：填充 ds.records（今天本机条目跳过，改用 Tai 数据）
                 for (auto& item : j) {
                     StatsRecord r;
-                    r.appName = ToWide(item["app_name"].get<std::string>());
+                    r.appName    = ToWide(item["app_name"].get<std::string>());
                     r.deviceName = ToWide(item["device_name"].get<std::string>());
-                    r.category = item.contains("category") ? ToWide(item["category"].get<std::string>()) : L"未分类";
-                    r.seconds = item["duration"].get<int>();
+                    r.category   = item.contains("category") ? ToWide(item["category"].get<std::string>()) : L"未分类";
+                    r.seconds    = item["duration"].get<int>();
+
+                    // 今天的本机条目跳过，后面用 Tai 实时数据替换
+                    if (dateStr == todayStr && r.deviceName == g_DeviceName) continue;
+
                     ds.records.push_back(r);
                     ds.totalSeconds += r.seconds;
                 }
             }
         } catch(...) {}
+
+        // 今天：用本机 Tai 实时数据插入本机条目（覆盖云端旧值）
+        // 分类优先从服务端 app_name_mappings 映射表查，查不到才用"未分类"
+        if (dateStr == todayStr && !localSnapshot.empty()) {
+            for (const auto& p : localSnapshot) {
+                StatsRecord r;
+                r.appName    = p.first;
+                r.deviceName = g_DeviceName;
+                auto catIt   = appCategoryMap.find(p.first);
+                r.category   = (catIt != appCategoryMap.end()) ? catIt->second : L"未分类";
+                r.seconds    = p.second;
+                ds.records.push_back(r);
+                ds.totalSeconds += r.seconds;
+            }
+        }
+
         cloudStats.push_back(ds);
     }
 

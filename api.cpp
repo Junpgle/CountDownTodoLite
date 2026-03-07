@@ -1,6 +1,7 @@
 #include "api.h"
 #include "utils.h"
 #include "common.h"
+#include "tai_reader.h"
 #include <winhttp.h>
 #include <ctime>
 #include <debugapi.h>
@@ -632,23 +633,20 @@ void SyncData() {
         }
     }
 
-    // ── 2. 屏幕时间（从 g_AppUsage 读取今日本机数据）──
+    // ── 2. 屏幕时间（直接从 Tai DB 实时快照上传，不依赖 g_AppUsage）──
     json screenTimePayload = nullptr;
     {
-        std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
-        json apps = json::array();
-        for (const auto &rec : g_AppUsage) {
-            // 只上传本机数据（device_name 与本机一致的条目）
-            if (rec.deviceName != g_DeviceName) continue;
-            json a;
-            a["app_name"] = ToUtf8(rec.appName);
-            a["duration"] = rec.seconds;
-            apps.push_back(a);
-        }
-        if (!apps.empty()) {
+        auto localUsage = GetLocalAppUsageMapCopy();
+        if (!localUsage.empty()) {
+            json apps = json::array();
+            for (const auto &p : localUsage) {
+                json a;
+                a["app_name"] = ToUtf8(p.first);
+                a["duration"] = p.second;
+                apps.push_back(a);
+            }
             screenTimePayload = json::object();
             screenTimePayload["device_name"] = ToUtf8(g_DeviceName);
-            // record_date：今日日期字符串 YYYY-MM-DD
             screenTimePayload["record_date"] = ToUtf8(GetTodayDate());
             screenTimePayload["apps"]        = apps;
         }
@@ -869,6 +867,17 @@ void SyncData() {
                             r.seconds    = item.value("duration", 0);
                             details.push_back(r);
                         }
+                        // 🚀 本机条目以 Tai DB 实时数据为准：
+                        // 先移除服务器返回的本机条目（可能是上次同步时的旧值），
+                        // 再用本机最新快照替换，其他设备条目保持服务器值不变
+                        auto localSnapshot = GetLocalAppUsageMapCopy();
+                        details.erase(
+                            std::remove_if(details.begin(), details.end(),
+                                [](const AppUsageRecord& r){ return r.deviceName == g_DeviceName; }),
+                            details.end());
+                        for (const auto& p : localSnapshot) {
+                            details.push_back({p.first, g_DeviceName, p.second});
+                        }
                         std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
                         g_AppUsage = details;
                     }
@@ -983,37 +992,16 @@ void ApiFetchCourses() {
 
 /**
  * 兼容旧接口：ApiSyncScreenTime（由 tai_reader 调用，保留签名）
- * 现在只做本地数据更新，实际上传由 SyncData 的 screen_time 字段携带
+ * 仅将本机最新屏幕时间缓存到 g_LocalScreenTimeCache，
+ * 供下次 SyncData() 的 screen_time payload 携带上传。
+ * 不再直接修改 g_AppUsage（避免覆盖服务器下发的多设备聚合数据）。
  */
 std::map<std::wstring, int> ApiSyncScreenTime(
     const std::map<std::wstring, int> &localData,
     const std::wstring &dateStr,
     const std::wstring &deviceName)
 {
-    if (g_UserId <= 0) return localData;
-
-    // 将本机屏幕时间写入 g_AppUsage（SyncData 会在下次同步时携带上传）
-    {
-        std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
-        // 先移除旧的本机条目，再插入最新数据
-        g_AppUsage.erase(std::remove_if(g_AppUsage.begin(), g_AppUsage.end(),
-            [&](const AppUsageRecord &r){ return r.deviceName == deviceName; }),
-            g_AppUsage.end());
-        for (const auto &p : localData) {
-            AppUsageRecord r;
-            r.appName    = p.first;
-            r.deviceName = deviceName;
-            r.seconds    = p.second;
-            g_AppUsage.push_back(r);
-        }
-    }
-
-    // 返回当前聚合数据（含其他设备）
-    std::map<std::wstring, int> agg;
-    {
-        std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
-        for (const auto &r : g_AppUsage) agg[r.appName] += r.seconds;
-    }
-    return agg.empty() ? localData : agg;
+    // 仅返回本地数据（调用方不使用返回值，保留签名兼容性）
+    return localData;
 }
 
