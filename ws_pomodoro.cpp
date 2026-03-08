@@ -1,0 +1,403 @@
+/**
+ * ws_pomodoro.cpp
+ * 番茄钟跨端 WebSocket 实时感知（WinHTTP WebSocket API）
+ */
+#include "ws_pomodoro.h"
+#include "utils.h"
+#include "api.h"
+#include <winhttp.h>
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <string>
+#include <sstream>
+#include <vector>
+
+// ============================================================
+// 内部状态
+// ============================================================
+static HINTERNET s_hSession  = NULL;
+static HINTERNET s_hConnect  = NULL;
+static HINTERNET s_hRequest  = NULL;
+static HINTERNET s_hWs       = NULL;
+
+static std::atomic<bool> s_Running{ false };
+static std::atomic<bool> s_Connected{ false };
+static std::mutex        s_SendMutex;
+
+// ============================================================
+// 工具：JSON 字符串转义
+// ============================================================
+static std::string JsonEscape(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        if      (c == '"')  out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else                out.push_back(c);
+    }
+    return out;
+}
+
+// ============================================================
+// 极简 JSON 字段提取
+// ============================================================
+static std::string ExtractJsonStr(const std::string& json, const char* key) {
+    std::string k = std::string("\"") + key + "\":";
+    auto pos = json.find(k);
+    if (pos == std::string::npos) return "";
+    pos += k.size();
+    while (pos < json.size() && json[pos] == ' ') pos++;
+    if (pos >= json.size()) return "";
+    if (json[pos] == '"') {
+        pos++;
+        std::string val;
+        while (pos < json.size() && json[pos] != '"') {
+            if (json[pos] == '\\' && pos+1 < json.size()) { pos++; }
+            val.push_back(json[pos++]);
+        }
+        return val;
+    }
+    auto end = json.find_first_of(",}", pos);
+    if (end == std::string::npos) end = json.size();
+    std::string v = json.substr(pos, end - pos);
+    // trim whitespace
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\r' || v.back() == '\n')) v.pop_back();
+    return v;
+}
+
+static long long ExtractJsonLL(const std::string& json, const char* key, long long def = 0) {
+    std::string v = ExtractJsonStr(json, key);
+    if (v.empty()) return def;
+    try { return std::stoll(v); } catch (...) { return def; }
+}
+static int ExtractJsonInt(const std::string& json, const char* key, int def = 0) {
+    return (int)ExtractJsonLL(json, key, def);
+}
+static bool ExtractJsonBool(const std::string& json, const char* key, bool def = false) {
+    std::string v = ExtractJsonStr(json, key);
+    if (v == "true")  return true;
+    if (v == "false") return false;
+    return def;
+}
+
+// ============================================================
+// 发送文本帧（线程安全）
+// ============================================================
+static bool WsSend(const std::string& msg) {
+    if (!s_hWs || !s_Connected) return false;
+    std::lock_guard<std::mutex> lk(s_SendMutex);
+    DWORD err = WinHttpWebSocketSend(
+        s_hWs,
+        WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+        (PVOID)msg.c_str(),
+        (DWORD)msg.size());
+    return err == ERROR_SUCCESS;
+}
+
+// ============================================================
+// 接收线程（正确处理分片）
+// ============================================================
+static void RecvLoop() {
+    const DWORD BUFSIZE = 32768;
+    std::vector<BYTE> buf(BUFSIZE);
+    std::string accumulate;
+
+    while (s_Running && s_hWs) {
+        DWORD bytesRead = 0;
+        WINHTTP_WEB_SOCKET_BUFFER_TYPE bufType{};
+        DWORD err = WinHttpWebSocketReceive(
+            s_hWs, buf.data(), BUFSIZE, &bytesRead, &bufType);
+
+        if (err != ERROR_SUCCESS) {
+            if (err == 12017 || err == ERROR_WINHTTP_TIMEOUT) {
+                // 12017 = INVALID_SERVER_RESPONSE / timeout — 忽略，继续等待
+                // （不应该发生，因为我们已设接收超时为 0；若仍发生则重连）
+                LogMessage(L"[WS番茄钟] Receive 暂时错误=" + std::to_wstring(err) + L"，将重连");
+            } else {
+                LogMessage(L"[WS番茄钟] Receive error=" + std::to_wstring(err));
+            }
+            break;
+        }
+
+        if (bytesRead > 0)
+            accumulate.append((char*)buf.data(), bytesRead);
+
+        bool isComplete =
+            (bufType == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE) ||
+            (bufType == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE);
+
+        if (!isComplete) continue;
+
+        if (bufType == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) {
+            LogMessage(L"[WS番茄钟] 服务器关闭连接");
+            accumulate.clear();
+            break;
+        }
+
+        std::string msg = std::move(accumulate);
+        accumulate.clear();
+        if (msg.empty()) continue;
+
+        LogMessage(L"[WS番茄钟] 收到: " + ToWide(msg.size() > 300 ? msg.substr(0, 300) + "..." : msg));
+
+        std::string action = ExtractJsonStr(msg, "action");
+        if (action.empty()) continue;
+        // 🚀 忽略心跳（客户端 PING / HEARTBEAT）
+        if (action == "PING" || action == "HEARTBEAT") continue;
+
+        std::string srcDev = ExtractJsonStr(msg, "sourceDevice");
+        std::wstring srcDevW = ToWide(srcDev);
+        if (srcDevW == g_DeviceId) continue;
+
+        if (action == "START" || action == "SYNC") {
+            // 🚀 兼容 Flutter 端字段名（targetEndMs / target_end_ms / endTime）
+            long long targetEndMs = ExtractJsonLL(msg, "targetEndMs");
+            if (targetEndMs == 0) targetEndMs = ExtractJsonLL(msg, "target_end_ms");
+            if (targetEndMs == 0) targetEndMs = ExtractJsonLL(msg, "endTime");
+
+            long long startTimeMs = ExtractJsonLL(msg, "timestamp");
+            if (startTimeMs == 0) startTimeMs = ExtractJsonLL(msg, "startTime");
+            if (startTimeMs == 0) startTimeMs = ExtractJsonLL(msg, "start_time");
+
+            // plannedSecs / planned_duration（Flutter 可能发秒或毫秒）
+            int plannedSecs = ExtractJsonInt(msg, "plannedSecs", 0);
+            if (plannedSecs == 0) {
+                int pd = ExtractJsonInt(msg, "planned_duration", 0);
+                // Flutter 的 planned_duration 是秒数（1500 = 25分钟）
+                plannedSecs = (pd > 0) ? pd : 1500;
+            }
+
+            // todoContent / todo_content / todo_uuid（Flutter 可能只发uuid，用uuid兜底）
+            std::wstring todoContent = ToWide(ExtractJsonStr(msg, "todoContent"));
+            if (todoContent.empty()) todoContent = ToWide(ExtractJsonStr(msg, "todo_content"));
+            if (todoContent.empty()) {
+                // 用 todo_uuid 在本地 g_Todos 里查 content
+                std::string tuuid = ExtractJsonStr(msg, "todo_uuid");
+                if (!tuuid.empty()) {
+                    std::lock_guard<std::recursive_mutex> lk2(g_DataMutex);
+                    for (const auto& t : g_Todos) {
+                        if (ToUtf8(t.uuid) == tuuid || ToUtf8(t.content).find(tuuid) != std::string::npos) {
+                            todoContent = t.content; break;
+                        }
+                    }
+                    if (todoContent.empty()) todoContent = ToWide(tuuid); // 兜底显示 uuid
+                }
+            }
+
+            // isRest / is_rest
+            bool isRest = ExtractJsonBool(msg, "isRest");
+            if (!isRest) isRest = ExtractJsonBool(msg, "is_rest");
+
+            // 🚀 如果 targetEndMs 为 0，用 timestamp + plannedSecs 推算
+            long long nowMs = (long long)time(nullptr) * 1000LL;
+            if (targetEndMs == 0 && startTimeMs > 0) {
+                targetEndMs = startTimeMs + (long long)plannedSecs * 1000LL;
+            }
+            if (targetEndMs == 0) {
+                targetEndMs = nowMs + (long long)plannedSecs * 1000LL;
+            }
+
+            {
+                std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+                g_RemoteFocus.active       = true;
+                g_RemoteFocus.sourceDevice = srcDevW;
+                g_RemoteFocus.todoContent  = todoContent;
+                g_RemoteFocus.targetEndMs  = targetEndMs;
+                g_RemoteFocus.startTimeMs  = startTimeMs > 0
+                    ? startTimeMs
+                    : (targetEndMs - (long long)plannedSecs * 1000LL);
+                g_RemoteFocus.plannedSecs  = plannedSecs;
+                g_RemoteFocus.isRestPhase  = isRest;
+                g_RemoteFocus.receivedAt   = nowMs;
+            }
+            if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+            LogMessage(L"[WS番茄钟] 远端专注 from=" + srcDevW
+                + L" end=" + std::to_wstring(targetEndMs)
+                + L" planned=" + std::to_wstring(plannedSecs)
+                + L" todo=" + todoContent);
+
+        } else if (action == "STOP" || action == "INTERRUPT") {
+            {
+                std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+                g_RemoteFocus = RemoteFocusState{};
+            }
+            if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+            LogMessage(L"[WS番茄钟] 远端专注结束 from=" + srcDevW);
+        }
+    }
+
+    s_Connected = false;
+    LogMessage(L"[WS番茄钟] 接收线程退出");
+}
+
+// ============================================================
+// 公开接口实现
+// ============================================================
+void WsPomodoroConnect() {
+    if (s_Connected || s_Running) return;
+    if (g_UserId <= 0 || g_DeviceId.empty()) return;
+
+    s_Running   = true;
+    s_Connected = false;
+
+    std::thread([]() {
+        while (s_Running && g_UserId > 0) {
+            std::wstring wsPath = L"/?userId=" + std::to_wstring(g_UserId)
+                                + L"&deviceId=" + g_DeviceId;
+
+            LogMessage(L"[WS番茄钟] 正在连接 " + WS_HOST
+                + L":" + std::to_wstring(WS_PORT) + wsPath);
+
+            do {
+                // 🚀 WINHTTP_FLAG_ASYNC=0，使用同步模式
+                s_hSession = WinHttpOpen(L"MathQuizLite-WS/1.0",
+                    WINHTTP_ACCESS_TYPE_NO_PROXY,
+                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+                if (!s_hSession) {
+                    LogMessage(L"[WS番茄钟] WinHttpOpen 失败 err=" + std::to_wstring(GetLastError()));
+                    break;
+                }
+
+                // 🚀 只设连接超时和发送超时，不设接收超时
+                // WebSocket 长连接接收是阻塞的，设接收超时会导致 12017 断连
+                DWORD connTo = 10000;
+                WinHttpSetOption(s_hSession, WINHTTP_OPTION_CONNECT_TIMEOUT, &connTo, sizeof(connTo));
+                DWORD sendTo = 15000;
+                WinHttpSetOption(s_hSession, WINHTTP_OPTION_SEND_TIMEOUT, &sendTo, sizeof(sendTo));
+
+                s_hConnect = WinHttpConnect(s_hSession, WS_HOST.c_str(), WS_PORT, 0);
+                if (!s_hConnect) {
+                    LogMessage(L"[WS番茄钟] WinHttpConnect 失败 err=" + std::to_wstring(GetLastError()));
+                    break;
+                }
+
+                // 🚀 关键：纯 HTTP（非 HTTPS），不传 WINHTTP_FLAG_SECURE
+                s_hRequest = WinHttpOpenRequest(s_hConnect, L"GET", wsPath.c_str(),
+                    NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+                if (!s_hRequest) {
+                    LogMessage(L"[WS番茄钟] WinHttpOpenRequest 失败 err=" + std::to_wstring(GetLastError()));
+                    break;
+                }
+
+                // 🚀 升级 WebSocket
+                if (!WinHttpSetOption(s_hRequest,
+                        WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, NULL, 0)) {
+                    LogMessage(L"[WS番茄钟] UPGRADE_TO_WEB_SOCKET 失败 err=" + std::to_wstring(GetLastError()));
+                    break;
+                }
+
+                if (!WinHttpSendRequest(s_hRequest,
+                        WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                        WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+                    LogMessage(L"[WS番茄钟] SendRequest 失败 err=" + std::to_wstring(GetLastError()));
+                    break;
+                }
+
+                if (!WinHttpReceiveResponse(s_hRequest, NULL)) {
+                    LogMessage(L"[WS番茄钟] ReceiveResponse 失败 err=" + std::to_wstring(GetLastError()));
+                    break;
+                }
+
+                // 检查 HTTP 状态码（WebSocket 升级应为 101）
+                DWORD statusCode = 0;
+                DWORD statusSize = sizeof(statusCode);
+                WinHttpQueryHeaders(s_hRequest,
+                    WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                    NULL, &statusCode, &statusSize, NULL);
+                LogMessage(L"[WS番茄钟] HTTP 状态码=" + std::to_wstring(statusCode));
+
+                s_hWs = WinHttpWebSocketCompleteUpgrade(s_hRequest, 0);
+                if (!s_hWs) {
+                    LogMessage(L"[WS番茄钟] CompleteUpgrade 失败 err=" + std::to_wstring(GetLastError()));
+                    break;
+                }
+
+                // 请求句柄用完
+                WinHttpCloseHandle(s_hRequest); s_hRequest = NULL;
+
+                s_Connected = true;
+                LogMessage(L"[WS番茄钟] ✅ 连接成功 userId=" + std::to_wstring(g_UserId));
+
+                // 🚀 心跳线程：每 25 秒发一个 PING，防止 NAT 超时断连
+                std::atomic<bool> pingRunning{ true };
+                std::thread pingThread([&pingRunning]() {
+                    for (int i = 0; i < 2400 && pingRunning && s_Connected && s_hWs; i++) {
+                        Sleep(500);
+                        if (i % 50 == 49) { // 每 25s
+                            if (s_hWs && s_Connected) {
+                                std::lock_guard<std::mutex> lk(s_SendMutex);
+                                WinHttpWebSocketSend(s_hWs,
+                                    WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+                                    (PVOID)"{\"action\":\"PING\"}", 17);
+                            }
+                        }
+                    }
+                });
+                pingThread.detach();
+
+                RecvLoop(); // 阻塞直到断开
+
+                pingRunning = false;
+
+            } while (false);
+
+            // ── 清理句柄 ─────────────────────────────────────
+            if (s_hWs) {
+                WinHttpWebSocketClose(s_hWs,
+                    WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, NULL, 0);
+                WinHttpCloseHandle(s_hWs);     s_hWs     = NULL;
+            }
+            if (s_hRequest) { WinHttpCloseHandle(s_hRequest); s_hRequest = NULL; }
+            if (s_hConnect) { WinHttpCloseHandle(s_hConnect); s_hConnect = NULL; }
+            if (s_hSession) { WinHttpCloseHandle(s_hSession); s_hSession = NULL; }
+            s_Connected = false;
+
+            if (!s_Running || g_UserId <= 0) break;
+
+            LogMessage(L"[WS番茄钟] 5秒后重连...");
+            for (int i = 0; i < 50 && s_Running && g_UserId > 0; i++) Sleep(100);
+        }
+
+        s_Running = false;
+        LogMessage(L"[WS番茄钟] 连接线程退出");
+    }).detach();
+}
+
+void WsPomodoroDisconnect() {
+    s_Running   = false;
+    s_Connected = false;
+    if (s_hWs) {
+        WinHttpWebSocketClose(s_hWs,
+            WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, NULL, 0);
+    }
+    std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+    g_RemoteFocus = RemoteFocusState{};
+}
+
+void WsPomodoroSendStart(long long targetEndMs, int plannedSecs,
+                          const std::wstring& todoContent, bool isRest)
+{
+    if (!s_Connected) return;
+    long long nowMs = (long long)time(nullptr) * 1000LL;
+    std::string content = JsonEscape(ToUtf8(todoContent));
+    std::ostringstream ss;
+    ss << "{"
+       << "\"action\":\"START\","
+       << "\"targetEndMs\":" << targetEndMs << ","
+       << "\"plannedSecs\":" << plannedSecs  << ","
+       << "\"todoContent\":\"" << content   << "\","
+       << "\"isRest\":"    << (isRest ? "true" : "false") << ","
+       << "\"timestamp\":" << nowMs
+       << "}";
+    WsSend(ss.str());
+    LogMessage(L"[WS番茄钟] 已发送 START end=" + std::to_wstring(targetEndMs));
+}
+
+void WsPomodoroSendStop() {
+    if (!s_Connected) return;
+    WsSend("{\"action\":\"STOP\"}");
+    LogMessage(L"[WS番茄钟] 已发送 STOP");
+}
+

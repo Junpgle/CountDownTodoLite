@@ -3,6 +3,7 @@
 #include "api.h"
 #include "ui.h"
 #include "tai_reader.h"
+#include "ws_pomodoro.h"
 // 引入资源头文件
 #include "resource.h"
 #include <thread>
@@ -305,6 +306,9 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
         LoadLocalCourses();
         ResizeWidget(); // 立即用缓存数据渲染一次，用户马上看到内容
 
+        // 🚀 登录成功后立即连接番茄钟跨端 WebSocket
+        WsPomodoroConnect();
+
         // --- 程序启动时立即进行一次云端数据同步 ---
         std::thread([]() {
             // 稍作延迟确保窗口句柄已经完全准备好接收刷新消息
@@ -325,6 +329,7 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
 
     // 退出资源清理
     StopTaiReader();
+    WsPomodoroDisconnect(); // 🚀 断开番茄钟跨端 WebSocket
 
     // 🚀 在 GDI+ 关闭前，清理字体资源
     CleanupCustomFont();

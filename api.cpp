@@ -1279,3 +1279,166 @@ void ApiFetchPomodoroHistory(long long fromMs, long long toMs) {
         LogMessage(L"[番茄钟] 历史记录 JSON 解析失败（未知异常）");
     }
 }
+
+// ============================================================
+// 🍅 番茄钟本地缓存  (pomodoro_cache.json)
+// ============================================================
+
+static std::wstring GetPomodoroCachePath() {
+    WCHAR exeDir[MAX_PATH];
+    GetModuleFileNameW(NULL, exeDir, MAX_PATH);
+    PathRemoveFileSpecW(exeDir);
+    PathAppendW(exeDir, L"pomodoro_cache.json");
+    return exeDir;
+}
+
+void SavePomodoroLocalCache() {
+    try {
+        json root;
+        root["version"]  = 1;
+        root["saved_at"] = (long long)time(nullptr) * 1000LL;
+        root["user_id"]  = g_UserId;
+
+        json recsArr = json::array();
+        {
+            std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+            for (const auto& rec : g_PomodoroHistory) {
+                json j;
+                j["uuid"]             = ToUtf8(rec.uuid);
+                j["todo_uuid"]        = ToUtf8(rec.todoUuid);
+                j["start_time"]       = rec.startTime;
+                j["end_time"]         = rec.endTime;
+                j["planned_duration"] = rec.plannedDuration;
+                j["actual_duration"]  = rec.actualDuration;
+                j["status"]           = ToUtf8(rec.status);
+                j["device_id"]        = ToUtf8(rec.deviceId);
+                j["is_deleted"]       = rec.isDeleted ? 1 : 0;
+                j["version"]          = rec.version;
+                j["created_at"]       = rec.createdAt;
+                j["updated_at"]       = rec.updatedAt;
+                j["is_dirty"]         = rec.isDirty;
+                recsArr.push_back(j);
+            }
+        }
+        root["records"] = recsArr;
+
+        std::string s = root.dump();
+        std::wstring path = GetPomodoroCachePath();
+        HANDLE hFile = CreateFileW(path.c_str(), GENERIC_WRITE, 0, NULL,
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            WriteFile(hFile, s.c_str(), (DWORD)s.size(), &written, NULL);
+            CloseHandle(hFile);
+            LogMessage(L"[番茄钟] 本地缓存已保存，共 " + std::to_wstring(recsArr.size()) + L" 条记录");
+        }
+    } catch (const std::exception& e) {
+        LogMessage(L"[番茄钟] 本地缓存保存失败: " + ToWide(e.what()));
+    } catch (...) {
+        LogMessage(L"[番茄钟] 本地缓存保存失败（未知异常）");
+    }
+}
+
+void LoadPomodoroLocalCache() {
+    std::wstring path = GetPomodoroCachePath();
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        LogMessage(L"[番茄钟] 无本地缓存文件，跳过加载");
+        return;
+    }
+    DWORD sz = GetFileSize(hFile, NULL);
+    std::string s(sz, '\0');
+    DWORD read = 0;
+    ReadFile(hFile, &s[0], sz, &read, NULL);
+    CloseHandle(hFile);
+
+    try {
+        auto root = json::parse(s);
+        int uid = root.value("user_id", 0);
+        if (uid != g_UserId) {
+            LogMessage(L"[番茄钟] 本地缓存 userId 不匹配，跳过");
+            return;
+        }
+        if (!root.contains("records") || !root["records"].is_array()) return;
+
+        auto safeStr = [](const json& j, const char* key, const std::string& def = "") -> std::string {
+            if (!j.contains(key)) return def;
+            const auto& v = j[key];
+            return (v.is_null() || !v.is_string()) ? def : v.get<std::string>();
+        };
+        auto safeInt = [](const json& j, const char* key, int def = 0) -> int {
+            if (!j.contains(key)) return def;
+            const auto& v = j[key];
+            return (v.is_null() || !v.is_number()) ? def : v.get<int>();
+        };
+        auto safeLL = [](const json& j, const char* key, long long def = 0LL) -> long long {
+            if (!j.contains(key)) return def;
+            const auto& v = j[key];
+            return (v.is_null() || !v.is_number()) ? def : v.get<long long>();
+        };
+
+        std::vector<PomodoroRecord> recs;
+        for (const auto& j : root["records"]) {
+            if (!j.is_object()) continue;
+            PomodoroRecord rec;
+            rec.uuid            = ToWide(safeStr(j, "uuid"));
+            rec.todoUuid        = ToWide(safeStr(j, "todo_uuid"));
+            rec.startTime       = safeLL(j, "start_time");
+            rec.endTime         = safeLL(j, "end_time");
+            rec.plannedDuration = safeInt(j, "planned_duration", 1500);
+            rec.actualDuration  = safeInt(j, "actual_duration", 0);
+            rec.status          = ToWide(safeStr(j, "status", "completed"));
+            rec.deviceId        = ToWide(safeStr(j, "device_id"));
+            rec.isDeleted       = safeInt(j, "is_deleted") != 0;
+            rec.version         = safeInt(j, "version", 1);
+            rec.createdAt       = safeLL(j, "created_at");
+            rec.updatedAt       = safeLL(j, "updated_at");
+            rec.isDirty         = j.contains("is_dirty") && j["is_dirty"].is_boolean()
+                                    ? j["is_dirty"].get<bool>() : true;
+            if (!rec.uuid.empty()) recs.push_back(rec);
+        }
+
+        {
+            std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+            g_PomodoroHistory = recs;
+        }
+        LogMessage(L"[番茄钟] 本地缓存加载完成，共 " + std::to_wstring(recs.size()) + L" 条记录");
+    } catch (const std::exception& e) {
+        LogMessage(L"[番茄钟] 本地缓存解析失败: " + ToWide(e.what()));
+    } catch (...) {
+        LogMessage(L"[番茄钟] 本地缓存解析失败（未知异常）");
+    }
+}
+
+void UploadPendingPomodoroRecords() {
+    if (g_UserId <= 0 || g_AuthToken.empty()) return;
+
+    std::vector<PomodoroRecord> pending;
+    {
+        std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+        for (const auto& rec : g_PomodoroHistory)
+            if (rec.isDirty && !rec.isDeleted) pending.push_back(rec);
+    }
+
+    if (pending.empty()) return;
+    LogMessage(L"[番茄钟] 开始上传待发送记录，共 " + std::to_wstring(pending.size()) + L" 条");
+
+    int uploaded = 0;
+    for (auto& rec : pending) {
+        if (ApiUploadPomodoroRecord(rec)) {
+            // 标记为已上传
+            std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+            for (auto& r : g_PomodoroHistory) {
+                if (r.uuid == rec.uuid) { r.isDirty = false; break; }
+            }
+            uploaded++;
+        }
+    }
+
+    if (uploaded > 0) {
+        SavePomodoroLocalCache();
+        LogMessage(L"[番茄钟] 成功上传 " + std::to_wstring(uploaded) + L" 条记录");
+    }
+}
+

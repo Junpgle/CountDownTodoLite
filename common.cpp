@@ -1,7 +1,9 @@
 #include "common.h"
 
 // 所有的全局变量在这里分配实际内存并初始化
-const std::wstring API_HOST = L"mathquiz.junpgle.me";
+const std::wstring API_HOST    = L"mathquiz.junpgle.me";
+const std::wstring WS_HOST     = L"101.200.13.100";  // 阿里云 WS 服务器公网 IP
+const WORD         WS_PORT     = 8081;
 const std::wstring SETTINGS_FILE = L"math_quiz_lite.ini";
 const wchar_t *APP_NAME = L"MathQuizLite";
 
@@ -50,6 +52,7 @@ std::vector<Course> g_Courses;
 PomodoroSession g_PomodoroSession;
 std::vector<PomodoroTag> g_PomodoroTags;
 std::vector<PomodoroRecord> g_PomodoroHistory;
+RemoteFocusState g_RemoteFocus;
 
 namespace InputState {
     std::wstring result1;

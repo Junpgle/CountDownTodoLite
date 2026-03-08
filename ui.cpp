@@ -2,6 +2,7 @@
 #include "utils.h"
 #include "api.h"
 #include "common.h"
+#include "ws_pomodoro.h"
 #include "stats_window.h"
 #include "weekly_view_window.h"
 #include "settings_window.h"
@@ -206,6 +207,89 @@ void RenderWidget() {
         g.DrawLine(&linePen, (REAL)S(15), (REAL)S(45), (REAL)(width - S(15)), (REAL)S(45));
 
         float y = (float) S(55);
+
+        // ══════════════════════════════════════════════════
+        // 🚀 远端番茄钟实时感知横幅（置顶，仅当有远端专注时显示）
+        // ══════════════════════════════════════════════════
+        {
+            RemoteFocusState remote = g_RemoteFocus; // 已在 lock 内
+            if (remote.active && remote.targetEndMs > 0) {
+                long long nowMs = (long long)time(nullptr) * 1000LL;
+                long long diffMs = remote.targetEndMs - nowMs;
+                // 超时 30 秒自动清除
+                if (diffMs < -30000) {
+                    g_RemoteFocus = RemoteFocusState{};
+                } else {
+                    int remainSec = diffMs > 0 ? (int)(diffMs / 1000) : 0;
+                    Color bannerBg = remote.isRestPhase
+                        ? Color(210, 34, 139, 80)   // 休息: 绿
+                        : Color(210, 74, 108, 247);  // 专注: 蓝紫
+
+                    // 圆角矩形背景
+                    REAL bx = (REAL)S(10), bw = (REAL)(width - S(20));
+                    REAL bh = remote.todoContent.empty() ? (REAL)S(62) : (REAL)S(78);
+                    REAL br = (REAL)S(10);
+                    GraphicsPath bp;
+                    bp.AddArc(bx,          y,         br*2, br*2, 180.0f, 90.0f);
+                    bp.AddArc(bx+bw-br*2,  y,         br*2, br*2, 270.0f, 90.0f);
+                    bp.AddArc(bx+bw-br*2,  y+bh-br*2, br*2, br*2,   0.0f, 90.0f);
+                    bp.AddArc(bx,          y+bh-br*2, br*2, br*2,  90.0f, 90.0f);
+                    bp.CloseFigure();
+                    SolidBrush bannerBr(bannerBg);
+                    g.FillPath(&bannerBr, &bp);
+
+                    Font fBLabel(&ff, (REAL)S(11), FontStyleRegular, UnitPixel);
+                    Font fBTime (&ff, (REAL)S(20), FontStyleBold,    UnitPixel);
+                    Font fBSub  (&ff, (REAL)S(11), FontStyleRegular, UnitPixel);
+                    SolidBrush wBr2(Color(255,255,255,255));
+                    SolidBrush wSub(Color(200,255,255,255));
+
+                    StringFormat sfC2, sfL2;
+                    sfC2.SetAlignment(StringAlignmentCenter);
+                    sfC2.SetLineAlignment(StringAlignmentCenter);
+                    sfL2.SetAlignment(StringAlignmentNear);
+                    sfL2.SetLineAlignment(StringAlignmentCenter);
+                    sfL2.SetTrimming(StringTrimmingEllipsisCharacter);
+                    sfL2.SetFormatFlags(StringFormatFlagsNoWrap);
+
+                    // 标签行
+                    std::wstring label = remote.isRestPhase ? L"📱 休息中" : L"📱 专注中";
+                    std::wstring devShort = remote.sourceDevice.size() > 14
+                        ? remote.sourceDevice.substr(0,12) + L".."
+                        : remote.sourceDevice;
+                    std::wstring labelStr = label + L"  " + devShort;
+                    g.DrawString(labelStr.c_str(), -1, &fBLabel,
+                        RectF(bx + S(10), y + S(4), bw - S(20), (REAL)S(14)), &sfL2, &wSub);
+
+                    // 倒计时大字
+                    wchar_t tcBuf[16];
+                    swprintf_s(tcBuf, L"%02d:%02d", remainSec/60, remainSec%60);
+                    g.DrawString(tcBuf, -1, &fBTime,
+                        RectF(bx, y + S(16), bw, (REAL)S(26)), &sfC2, &wBr2);
+
+                    // 进度条
+                    REAL totalSecs = (REAL)(remote.plannedSecs > 0 ? remote.plannedSecs : 1500);
+                    REAL elapsed   = totalSecs - (REAL)remainSec;
+                    REAL prog      = std::max(0.0f, std::min(1.0f, elapsed / totalSecs));
+                    REAL pbx = bx + S(10), pby = y + S(44);
+                    REAL pbw = bw - S(20), pbh = (REAL)S(4);
+                    SolidBrush pbBg(Color(60,255,255,255));
+                    SolidBrush pbFg(Color(255,255,255,255));
+                    g.FillRectangle(&pbBg, pbx, pby, pbw, pbh);
+                    g.FillRectangle(&pbFg, pbx, pby, pbw * prog, pbh);
+
+                    // 待办内容（可选行）
+                    if (!remote.todoContent.empty()) {
+                        std::wstring tc = L"📌 " + remote.todoContent;
+                        g.DrawString(tc.c_str(), -1, &fBSub,
+                            RectF(bx + S(10), y + S(52), bw - S(20), (REAL)S(18)), &sfL2, &wSub);
+                    }
+
+                    y += bh + S(6);
+                }
+            }
+        }
+        // ══════════════════════════════════════════════════
 
         // --- 倒计时板块 ---
         g.DrawString(L"重要日", -1, &headF, PointF((REAL) S(15), y), &gBrush);
@@ -513,6 +597,17 @@ void ResizeWidget() {
     if (!g_hWidgetWnd) return;
     std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
     int h = S(55);
+
+    // 🚀 远端番茄钟横幅高度
+    if (g_RemoteFocus.active && g_RemoteFocus.targetEndMs > 0) {
+        long long nowMs = (long long)time(nullptr) * 1000LL;
+        long long diffMs = g_RemoteFocus.targetEndMs - nowMs;
+        if (diffMs >= -30000) {
+            int bh = g_RemoteFocus.todoContent.empty() ? S(62) : S(78);
+            h += bh + S(6);
+        }
+    }
+
     int activeCountdowns = 0;
     for (const auto& c : g_Countdowns) if (c.daysLeft >= 0) activeCountdowns++;
     h += S(30) + (activeCountdowns == 0 ? S(20) : activeCountdowns * S(20));
@@ -681,6 +776,7 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 来自设置窗口的退出登录请求（id=9001）
         case WM_COMMAND: {
             if (LOWORD(wp) == 9001) {
+                WsPomodoroDisconnect(); // 🚀 退出登录时断开 WS
                 g_UserId = 0; g_Username = L""; g_AuthToken = L""; g_LoginSuccess = false;
                 {
                     std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
@@ -688,6 +784,7 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 ShowWindow(hWnd, SW_HIDE);
                 if (ShowLogin(true)) {
+                    WsPomodoroConnect(); // 🚀 重新登录后重连 WS
                     std::thread([]() { SyncData(); }).detach();
                     ShowWindow(hWnd, SW_SHOW);
                 } else {

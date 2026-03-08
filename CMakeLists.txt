@@ -21,6 +21,10 @@ add_executable(MathQuizLite
         settings_window.cpp
         pomodoro_window.h
         pomodoro_window.cpp
+        pomodoro_stats_window.h
+        pomodoro_stats_window.cpp
+        ws_pomodoro.h
+        ws_pomodoro.cpp
         resource.h
         resources.rc
 )

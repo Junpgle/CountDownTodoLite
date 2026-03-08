@@ -36,10 +36,11 @@
 
 // 常量声明 (仅声明，定义在 common.cpp)
 extern const std::wstring API_HOST;
+extern const std::wstring WS_HOST;   // 阿里云 WebSocket 服务器 IP
+extern const WORD         WS_PORT;   // WebSocket 端口（8081）
 extern const std::wstring SETTINGS_FILE;
 extern const wchar_t *APP_NAME;
 
-#include <gdiplus.h>
 
 // 声明全局字体集合和 FontFamily 指针
 extern Gdiplus::PrivateFontCollection g_FontCollection;
@@ -211,6 +212,19 @@ extern std::vector<Course> g_Courses;
 extern PomodoroSession g_PomodoroSession;
 extern std::vector<PomodoroTag> g_PomodoroTags;
 extern std::vector<PomodoroRecord> g_PomodoroHistory; // 本次会话的历史记录（统计用）
+
+// 🚀 跨端感知：其他设备的专注状态（由 WebSocket 推送更新）
+struct RemoteFocusState {
+    bool         active        = false;
+    std::wstring sourceDevice;           // 发起端设备 ID
+    std::wstring todoContent;            // 绑定的待办内容（可为空）
+    long long    targetEndMs   = 0;      // 专注结束的 UTC ms 时间戳
+    long long    startTimeMs   = 0;      // 专注开始的 UTC ms 时间戳
+    int          plannedSecs   = 1500;   // 计划专注秒数
+    bool         isRestPhase   = false;  // true=休息中
+    long long    receivedAt    = 0;      // 本机收到该状态的时间（用于偏差修正）
+};
+extern RemoteFocusState g_RemoteFocus;
 
 namespace InputState {
     extern std::wstring result1;

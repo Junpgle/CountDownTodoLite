@@ -1,6 +1,9 @@
 #pragma once
 #include "common.h"
 
+// 日志输出（定义在 api.cpp）
+void LogMessage(const std::wstring& msg);
+
 // 发送网络请求
 std::string SendRequest(const std::wstring &path, const std::string &method, const std::string &body);
 
@@ -55,5 +58,15 @@ void ApiSyncPomodoroTags();
 // 记录上传（单条专注记录上传到后端）
 bool ApiUploadPomodoroRecord(const PomodoroRecord &rec);
 
+// 🚀 本地记录缓存（pomodoro_cache.json）
+// SavePomodoroLocalCache：每次完成 / 中断专注后立即调用
+// LoadPomodoroLocalCache：程序启动 / 登录后调用，恢复历史并上传未发送的记录
+void SavePomodoroLocalCache();
+void LoadPomodoroLocalCache();
+
+// 将本地 isDirty 的记录批量上传云端（后台线程调用）
+void UploadPendingPomodoroRecords();
+
 // 拉取历史记录（按时间范围）
 void ApiFetchPomodoroHistory(long long fromMs, long long toMs);
+
