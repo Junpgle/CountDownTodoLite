@@ -165,28 +165,28 @@ static void RecvLoop() {
             if (startTimeMs == 0) startTimeMs = ExtractJsonLL(msg, "startTime");
             if (startTimeMs == 0) startTimeMs = ExtractJsonLL(msg, "start_time");
 
-            // plannedSecs / planned_duration（Flutter 可能发秒或毫秒）
+            // plannedSecs / planned_duration
             int plannedSecs = ExtractJsonInt(msg, "plannedSecs", 0);
             if (plannedSecs == 0) {
                 int pd = ExtractJsonInt(msg, "planned_duration", 0);
-                // Flutter 的 planned_duration 是秒数（1500 = 25分钟）
                 plannedSecs = (pd > 0) ? pd : 1500;
             }
 
-            // todoContent / todo_content / todo_uuid（Flutter 可能只发uuid，用uuid兜底）
+            // todo_uuid：存起来，用于本地查找 + 同步回填
+            std::string tuuid = ExtractJsonStr(msg, "todo_uuid");
+            if (tuuid.empty()) tuuid = ExtractJsonStr(msg, "todoUuid");
+            std::wstring todoUuidW = ToWide(tuuid);
+
+            // todoContent：优先直接字段，否则本地 g_Todos 查找
             std::wstring todoContent = ToWide(ExtractJsonStr(msg, "todoContent"));
             if (todoContent.empty()) todoContent = ToWide(ExtractJsonStr(msg, "todo_content"));
-            if (todoContent.empty()) {
-                // 用 todo_uuid 在本地 g_Todos 里查 content
-                std::string tuuid = ExtractJsonStr(msg, "todo_uuid");
-                if (!tuuid.empty()) {
-                    std::lock_guard<std::recursive_mutex> lk2(g_DataMutex);
-                    for (const auto& t : g_Todos) {
-                        if (ToUtf8(t.uuid) == tuuid || ToUtf8(t.content).find(tuuid) != std::string::npos) {
-                            todoContent = t.content; break;
-                        }
+            if (todoContent.empty() && !tuuid.empty()) {
+                std::lock_guard<std::recursive_mutex> lk2(g_DataMutex);
+                for (const auto& t : g_Todos) {
+                    if (ToUtf8(t.uuid) == tuuid) {
+                        todoContent = t.content;
+                        break;
                     }
-                    if (todoContent.empty()) todoContent = ToWide(tuuid); // 兜底显示 uuid
                 }
             }
 
@@ -194,33 +194,54 @@ static void RecvLoop() {
             bool isRest = ExtractJsonBool(msg, "isRest");
             if (!isRest) isRest = ExtractJsonBool(msg, "is_rest");
 
-            // 🚀 如果 targetEndMs 为 0，用 timestamp + plannedSecs 推算
+            // 推算 targetEndMs
             long long nowMs = (long long)time(nullptr) * 1000LL;
-            if (targetEndMs == 0 && startTimeMs > 0) {
+            if (targetEndMs == 0 && startTimeMs > 0)
                 targetEndMs = startTimeMs + (long long)plannedSecs * 1000LL;
-            }
-            if (targetEndMs == 0) {
+            if (targetEndMs == 0)
                 targetEndMs = nowMs + (long long)plannedSecs * 1000LL;
-            }
 
             {
                 std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
-                g_RemoteFocus.active       = true;
-                g_RemoteFocus.sourceDevice = srcDevW;
-                g_RemoteFocus.todoContent  = todoContent;
-                g_RemoteFocus.targetEndMs  = targetEndMs;
-                g_RemoteFocus.startTimeMs  = startTimeMs > 0
+                g_RemoteFocus.active        = true;
+                g_RemoteFocus.sourceDevice  = srcDevW;
+                g_RemoteFocus.todoUuid      = todoUuidW;   // 🚀 存 UUID
+                g_RemoteFocus.todoContent   = todoContent;
+                g_RemoteFocus.targetEndMs   = targetEndMs;
+                g_RemoteFocus.startTimeMs   = startTimeMs > 0
                     ? startTimeMs
                     : (targetEndMs - (long long)plannedSecs * 1000LL);
-                g_RemoteFocus.plannedSecs  = plannedSecs;
-                g_RemoteFocus.isRestPhase  = isRest;
-                g_RemoteFocus.receivedAt   = nowMs;
+                g_RemoteFocus.plannedSecs   = plannedSecs;
+                g_RemoteFocus.isRestPhase   = isRest;
+                g_RemoteFocus.receivedAt    = nowMs;
             }
             if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
             LogMessage(L"[WS番茄钟] 远端专注 from=" + srcDevW
                 + L" end=" + std::to_wstring(targetEndMs)
                 + L" planned=" + std::to_wstring(plannedSecs)
                 + L" todo=" + todoContent);
+
+            // 🚀 若有绑定任务但本地找不到内容（未同步），触发增量同步后回填显示
+            if (!tuuid.empty() && todoContent.empty()) {
+                LogMessage(L"[WS番茄钟] 绑定任务本地未找到，触发增量同步回填...");
+                std::thread([todoUuidW]() {
+                    Sleep(300); // 稍等窗口刷新完
+                    SyncData(); // 增量同步拉取最新待办
+                    // 同步完成后尝试回填 todoContent
+                    std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+                    if (g_RemoteFocus.active && g_RemoteFocus.todoUuid == todoUuidW
+                        && g_RemoteFocus.todoContent.empty()) {
+                        for (const auto& t : g_Todos) {
+                            if (t.uuid == todoUuidW) {
+                                g_RemoteFocus.todoContent = t.content;
+                                if (g_hWidgetWnd)
+                                    PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+                                break;
+                            }
+                        }
+                    }
+                }).detach();
+            }
 
         } else if (action == "STOP" || action == "INTERRUPT") {
             {
@@ -229,6 +250,60 @@ static void RecvLoop() {
             }
             if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
             LogMessage(L"[WS番茄钟] 远端专注结束 from=" + srcDevW);
+
+        } else if (action == "SWITCH") {
+            // 🚀 仅更新绑定任务，保留倒计时状态不变
+            std::string tuuid = ExtractJsonStr(msg, "todo_uuid");
+            if (tuuid.empty()) tuuid = ExtractJsonStr(msg, "todoUuid");
+            std::wstring todoUuidW = ToWide(tuuid);
+
+            // 消息里直接带了 todo_title，优先用
+            std::wstring todoContent = ToWide(ExtractJsonStr(msg, "todo_title"));
+            if (todoContent.empty()) todoContent = ToWide(ExtractJsonStr(msg, "todoContent"));
+            if (todoContent.empty()) todoContent = ToWide(ExtractJsonStr(msg, "todo_content"));
+
+            // 若消息里没有标题，本地 g_Todos 查一次
+            if (todoContent.empty() && !tuuid.empty()) {
+                std::lock_guard<std::recursive_mutex> lk2(g_DataMutex);
+                for (const auto& t : g_Todos) {
+                    if (ToUtf8(t.uuid) == tuuid) {
+                        todoContent = t.content;
+                        break;
+                    }
+                }
+            }
+
+            {
+                std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+                // 只有当前还在专注状态才更新（防止乱序消息）
+                if (g_RemoteFocus.active) {
+                    g_RemoteFocus.todoUuid    = todoUuidW;
+                    g_RemoteFocus.todoContent = todoContent;
+                }
+            }
+            if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+            LogMessage(L"[WS番茄钟] 远端切换任务 from=" + srcDevW
+                + L" uuid=" + todoUuidW + L" title=" + todoContent);
+
+            // 若本地没找到标题，后台同步回填
+            if (!tuuid.empty() && todoContent.empty()) {
+                std::thread([todoUuidW]() {
+                    Sleep(300);
+                    SyncData();
+                    std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+                    if (g_RemoteFocus.active && g_RemoteFocus.todoUuid == todoUuidW
+                        && g_RemoteFocus.todoContent.empty()) {
+                        for (const auto& t : g_Todos) {
+                            if (t.uuid == todoUuidW) {
+                                g_RemoteFocus.todoContent = t.content;
+                                if (g_hWidgetWnd)
+                                    PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+                                break;
+                            }
+                        }
+                    }
+                }).detach();
+            }
         }
     }
 
@@ -391,22 +466,28 @@ void WsPomodoroDisconnect() {
 }
 
 void WsPomodoroSendStart(long long targetEndMs, int plannedSecs,
-                          const std::wstring& todoContent, bool isRest)
+                          const std::wstring& todoContent,
+                          const std::wstring& todoUuid,
+                          bool isRest)
 {
     if (!s_Connected) return;
     long long nowMs = (long long)time(nullptr) * 1000LL;
     std::string content = JsonEscape(ToUtf8(todoContent));
+    std::string uuid    = JsonEscape(ToUtf8(todoUuid));
     std::ostringstream ss;
     ss << "{"
        << "\"action\":\"START\","
        << "\"targetEndMs\":" << targetEndMs << ","
        << "\"plannedSecs\":" << plannedSecs  << ","
        << "\"todoContent\":\"" << content   << "\","
+       << "\"todo_title\":\""  << content   << "\","
+       << "\"todo_uuid\":\""   << uuid      << "\","
        << "\"isRest\":"    << (isRest ? "true" : "false") << ","
        << "\"timestamp\":" << nowMs
        << "}";
     WsSend(ss.str());
-    LogMessage(L"[WS番茄钟] 已发送 START end=" + std::to_wstring(targetEndMs));
+    LogMessage(L"[WS番茄钟] 已发送 START end=" + std::to_wstring(targetEndMs)
+               + L" uuid=" + todoUuid);
 }
 
 void WsPomodoroSendStop() {

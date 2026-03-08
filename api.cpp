@@ -1196,6 +1196,11 @@ bool ApiUploadPomodoroRecord(const PomodoroRecord &rec) {
     r["version"]          = rec.version;
     r["created_at"]       = rec.createdAt;
     r["updated_at"]       = rec.updatedAt;
+    // 🚀 上传关联标签 uuid 列表
+    json tagArr = json::array();
+    for (const auto& tu : rec.tagUuids)
+        tagArr.push_back(ToUtf8(tu));
+    r["tag_uuids"] = tagArr;
 
     json payload;
     payload["record"] = r;
@@ -1259,6 +1264,7 @@ void ApiFetchPomodoroHistory(long long fromMs, long long toMs) {
             PomodoroRecord rec;
             rec.uuid            = ToWide(safeStr(j, "uuid"));
             rec.todoUuid        = ToWide(safeStr(j, "todo_uuid"));
+            rec.todoTitle       = ToWide(safeStr(j, "todo_title")); // 🚀 新字段
             rec.startTime       = safeLL(j, "start_time");
             rec.endTime         = safeLL(j, "end_time");
             rec.plannedDuration = safeInt(j, "planned_duration", 1500);
@@ -1269,6 +1275,12 @@ void ApiFetchPomodoroHistory(long long fromMs, long long toMs) {
             rec.version         = safeInt(j, "version", 1);
             rec.createdAt       = safeLL(j, "created_at");
             rec.updatedAt       = safeLL(j, "updated_at");
+            // 🚀 解析 tag_uuids 数组
+            if (j.contains("tag_uuids") && j["tag_uuids"].is_array()) {
+                for (const auto& tu : j["tag_uuids"]) {
+                    if (tu.is_string()) rec.tagUuids.push_back(ToWide(tu.get<std::string>()));
+                }
+            }
             if (!rec.uuid.empty())
                 g_PomodoroHistory.push_back(rec);
         }
@@ -1306,6 +1318,7 @@ void SavePomodoroLocalCache() {
                 json j;
                 j["uuid"]             = ToUtf8(rec.uuid);
                 j["todo_uuid"]        = ToUtf8(rec.todoUuid);
+                j["todo_title"]       = ToUtf8(rec.todoTitle); // 🚀
                 j["start_time"]       = rec.startTime;
                 j["end_time"]         = rec.endTime;
                 j["planned_duration"] = rec.plannedDuration;
@@ -1317,6 +1330,11 @@ void SavePomodoroLocalCache() {
                 j["created_at"]       = rec.createdAt;
                 j["updated_at"]       = rec.updatedAt;
                 j["is_dirty"]         = rec.isDirty;
+                // 🚀 持久化 tag_uuids
+                json tagArr = json::array();
+                for (const auto& tu : rec.tagUuids)
+                    tagArr.push_back(ToUtf8(tu));
+                j["tag_uuids"] = tagArr;
                 recsArr.push_back(j);
             }
         }
@@ -1384,6 +1402,7 @@ void LoadPomodoroLocalCache() {
             PomodoroRecord rec;
             rec.uuid            = ToWide(safeStr(j, "uuid"));
             rec.todoUuid        = ToWide(safeStr(j, "todo_uuid"));
+            rec.todoTitle       = ToWide(safeStr(j, "todo_title")); // 🚀
             rec.startTime       = safeLL(j, "start_time");
             rec.endTime         = safeLL(j, "end_time");
             rec.plannedDuration = safeInt(j, "planned_duration", 1500);
@@ -1396,6 +1415,12 @@ void LoadPomodoroLocalCache() {
             rec.updatedAt       = safeLL(j, "updated_at");
             rec.isDirty         = j.contains("is_dirty") && j["is_dirty"].is_boolean()
                                     ? j["is_dirty"].get<bool>() : true;
+            // 🚀 加载 tag_uuids
+            if (j.contains("tag_uuids") && j["tag_uuids"].is_array()) {
+                for (const auto& tu : j["tag_uuids"]) {
+                    if (tu.is_string()) rec.tagUuids.push_back(ToWide(tu.get<std::string>()));
+                }
+            }
             if (!rec.uuid.empty()) recs.push_back(rec);
         }
 

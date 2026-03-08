@@ -20,9 +20,12 @@ void WsPomodoroDisconnect();
 // targetEndMs   : 专注结束 UTC ms
 // plannedSecs   : 计划专注秒数
 // todoContent   : 绑定待办内容（可为空）
+// todoUuid      : 绑定待办 UUID（可为空），供对端直接展示标题
 // isRest        : 是否休息阶段
 void WsPomodoroSendStart(long long targetEndMs, int plannedSecs,
-                          const std::wstring& todoContent, bool isRest = false);
+                          const std::wstring& todoContent,
+                          const std::wstring& todoUuid = L"",
+                          bool isRest = false);
 
 // 发送 STOP / INTERRUPT 消息（本机停止或中断时调用）
 void WsPomodoroSendStop();

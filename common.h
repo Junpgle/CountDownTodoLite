@@ -143,6 +143,7 @@ struct PomodoroSession {
 struct PomodoroRecord {
     std::wstring uuid;
     std::wstring todoUuid;
+    std::wstring todoTitle;   // 🚀 后端 JOIN todos.content 返回，仅用于显示
     long long    startTime       = 0;
     long long    endTime         = 0;    // 0 = 未结束
     int          plannedDuration = 1500;
@@ -154,6 +155,7 @@ struct PomodoroRecord {
     long long    createdAt = 0;
     long long    updatedAt = 0;
     bool         isDirty   = false;
+    std::vector<std::wstring> tagUuids; // 🚀 关联标签 UUID 列表
 };
 
 // ...existing code...
@@ -217,6 +219,7 @@ extern std::vector<PomodoroRecord> g_PomodoroHistory; // 本次会话的历史�
 struct RemoteFocusState {
     bool         active        = false;
     std::wstring sourceDevice;           // 发起端设备 ID
+    std::wstring todoUuid;               // 🚀 绑定待办的 UUID（用于同步后回填内容）
     std::wstring todoContent;            // 绑定的待办内容（可为空）
     long long    targetEndMs   = 0;      // 专注结束的 UTC ms 时间戳
     long long    startTimeMs   = 0;      // 专注开始的 UTC ms 时间戳
