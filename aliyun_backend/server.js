@@ -54,8 +54,8 @@ wss.on('connection', (ws, req) => {
     try {
       const data = JSON.parse(messageAsString);
 
-      // 🚀 忽略心跳 PING，不广播
-      if (data.action === 'PING') return;
+      // 🚀 忽略心跳（PING / HEARTBEAT），不广播
+      if (data.action === 'PING' || data.action === 'HEARTBEAT') return;
 
       const payload = { sourceDevice: deviceId, timestamp: Date.now(), ...data };
 

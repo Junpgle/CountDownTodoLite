@@ -103,6 +103,7 @@ static void RecvLoop() {
     const DWORD BUFSIZE = 32768;
     std::vector<BYTE> buf(BUFSIZE);
     std::string accumulate;
+    int consecutiveErrors = 0; // 连续错误计数
 
     while (s_Running && s_hWs) {
         DWORD bytesRead = 0;
@@ -111,15 +112,18 @@ static void RecvLoop() {
             s_hWs, buf.data(), BUFSIZE, &bytesRead, &bufType);
 
         if (err != ERROR_SUCCESS) {
-            if (err == 12017 || err == ERROR_WINHTTP_TIMEOUT) {
-                // 12017 = INVALID_SERVER_RESPONSE / timeout — 忽略，继续等待
-                // （不应该发生，因为我们已设接收超时为 0；若仍发生则重连）
-                LogMessage(L"[WS番茄钟] Receive 暂时错误=" + std::to_wstring(err) + L"，将重连");
-            } else {
-                LogMessage(L"[WS番茄钟] Receive error=" + std::to_wstring(err));
+            consecutiveErrors++;
+            LogMessage(L"[WS番茄钟] Receive error=" + std::to_wstring(err)
+                + L" (连续" + std::to_wstring(consecutiveErrors) + L"次)");
+            if (consecutiveErrors >= 3) {
+                LogMessage(L"[WS番茄钟] 连续错误3次，断开重连");
+                break;
             }
-            break;
+            Sleep(200); // 短暂等待后重试
+            continue;
         }
+
+        consecutiveErrors = 0; // 重置错误计数
 
         if (bytesRead > 0)
             accumulate.append((char*)buf.data(), bytesRead);
@@ -281,6 +285,11 @@ void WsPomodoroConnect() {
                     break;
                 }
 
+                // 🚀 在 request 上设置接收超时为最大值（无限等待）
+                // 注意：0 在某些 Windows 版本会被忽略，用 MAXDWORD 更可靠
+                DWORD recvTo = MAXDWORD;
+                WinHttpSetOption(s_hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, &recvTo, sizeof(recvTo));
+
                 // 🚀 升级 WebSocket
                 if (!WinHttpSetOption(s_hRequest,
                         WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, NULL, 0)) {
@@ -321,12 +330,15 @@ void WsPomodoroConnect() {
                 LogMessage(L"[WS番茄钟] ✅ 连接成功 userId=" + std::to_wstring(g_UserId));
 
                 // 🚀 心跳线程：每 25 秒发一个 PING，防止 NAT 超时断连
-                std::atomic<bool> pingRunning{ true };
-                std::thread pingThread([&pingRunning]() {
-                    for (int i = 0; i < 2400 && pingRunning && s_Connected && s_hWs; i++) {
+                // 用 shared_ptr 避免 do-while 退出后 pingRunning 悬空崩溃
+                auto pingRunning = std::make_shared<std::atomic<bool>>(true);
+                std::thread([pingRunning]() {   // 值捕获 shared_ptr，延长生命期
+                    int tick = 0;
+                    while (*pingRunning && s_Connected && s_hWs) {
                         Sleep(500);
-                        if (i % 50 == 49) { // 每 25s
-                            if (s_hWs && s_Connected) {
+                        tick++;
+                        if (tick % 50 == 0) { // 每 25s 发一次 PING
+                            if (s_hWs && s_Connected && *pingRunning) {
                                 std::lock_guard<std::mutex> lk(s_SendMutex);
                                 WinHttpWebSocketSend(s_hWs,
                                     WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
@@ -334,31 +346,33 @@ void WsPomodoroConnect() {
                             }
                         }
                     }
-                });
-                pingThread.detach();
+                }).detach();
 
                 RecvLoop(); // 阻塞直到断开
 
-                pingRunning = false;
+                *pingRunning = false; // 通知 ping 线程退出
 
             } while (false);
 
-            // ── 清理句柄 ─────────────────────────────────────
-            if (s_hWs) {
-                WinHttpWebSocketClose(s_hWs,
-                    WINHTTP_WEB_SOCKET_SUCCESS_CLOSE_STATUS, NULL, 0);
-                WinHttpCloseHandle(s_hWs);     s_hWs     = NULL;
-            }
+            // ── 清理句柄（不调用 WebSocketClose，避免对已断开连接挂死）────
+            if (s_hWs)      { WinHttpCloseHandle(s_hWs);     s_hWs     = NULL; }
             if (s_hRequest) { WinHttpCloseHandle(s_hRequest); s_hRequest = NULL; }
             if (s_hConnect) { WinHttpCloseHandle(s_hConnect); s_hConnect = NULL; }
             if (s_hSession) { WinHttpCloseHandle(s_hSession); s_hSession = NULL; }
             s_Connected = false;
 
-            if (!s_Running || g_UserId <= 0) break;
+            // 主动断开时退出重连循环
+            if (!s_Running || g_UserId <= 0) {
+                LogMessage(L"[WS番茄钟] 主动断开，不再重连");
+                break;
+            }
 
-            LogMessage(L"[WS番茄钟] 5秒后重连...");
+            LogMessage(L"[WS番茄钟] 连接断开，5秒后重连...");
             for (int i = 0; i < 50 && s_Running && g_UserId > 0; i++) Sleep(100);
-        }
+            if (!s_Running || g_UserId <= 0) break;
+            LogMessage(L"[WS番茄钟] 开始重连...");
+            // 继续 while 循环，重新建立连接
+        } // end while(s_Running)
 
         s_Running = false;
         LogMessage(L"[WS番茄钟] 连接线程退出");
