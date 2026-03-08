@@ -992,16 +992,290 @@ void ApiFetchCourses() {
 
 /**
  * 兼容旧接口：ApiSyncScreenTime（由 tai_reader 调用，保留签名）
- * 仅将本机最新屏幕时间缓存到 g_LocalScreenTimeCache，
- * 供下次 SyncData() 的 screen_time payload 携带上传。
- * 不再直接修改 g_AppUsage（避免覆盖服务器下发的多设备聚合数据）。
  */
 std::map<std::wstring, int> ApiSyncScreenTime(
     const std::map<std::wstring, int> &localData,
     const std::wstring &dateStr,
     const std::wstring &deviceName)
 {
-    // 仅返回本地数据（调用方不使用返回值，保留签名兼容性）
     return localData;
 }
 
+// ============================================================
+// 🍅 番茄钟 API 实现
+// ============================================================
+
+static std::wstring GetPomodoroSessionSection() { return L"Pomodoro"; }
+
+void SavePomodoroSession() {
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+
+    const std::wstring &sec = GetPomodoroSessionSection();
+    auto &s = g_PomodoroSession;
+    WritePrivateProfileStringW(sec.c_str(), L"Status",        std::to_wstring((int)s.status).c_str(),        path);
+    WritePrivateProfileStringW(sec.c_str(), L"TargetEndMs",   std::to_wstring(s.targetEndMs).c_str(),        path);
+    WritePrivateProfileStringW(sec.c_str(), L"FocusDuration", std::to_wstring(s.focusDuration).c_str(),      path);
+    WritePrivateProfileStringW(sec.c_str(), L"RestDuration",  std::to_wstring(s.restDuration).c_str(),       path);
+    WritePrivateProfileStringW(sec.c_str(), L"LoopCount",     std::to_wstring(s.loopCount).c_str(),          path);
+    WritePrivateProfileStringW(sec.c_str(), L"CurrentLoop",   std::to_wstring(s.currentLoop).c_str(),        path);
+    WritePrivateProfileStringW(sec.c_str(), L"BoundTodoUuid", s.boundTodoUuid.c_str(),                       path);
+    WritePrivateProfileStringW(sec.c_str(), L"RecordUuid",    s.currentRecordUuid.c_str(),                   path);
+    WritePrivateProfileStringW(sec.c_str(), L"IsRestPhase",   s.isRestPhase ? L"1" : L"0",                  path);
+}
+
+void LoadPomodoroSession() {
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+
+    const std::wstring &sec = GetPomodoroSessionSection();
+    auto readInt  = [&](const wchar_t* key, int def) -> int {
+        return GetPrivateProfileIntW(sec.c_str(), key, def, path);
+    };
+    auto readStr  = [&](const wchar_t* key) -> std::wstring {
+        WCHAR buf[512] = {};
+        GetPrivateProfileStringW(sec.c_str(), key, L"", buf, 512, path);
+        return buf;
+    };
+
+    auto &s = g_PomodoroSession;
+    s.status         = (PomodoroStatus)readInt(L"Status",        0);
+    s.targetEndMs    = 0;
+    {
+        std::wstring v = readStr(L"TargetEndMs");
+        if (!v.empty()) {
+            try { s.targetEndMs = std::stoll(v); } catch (...) {}
+        }
+    }
+    s.focusDuration  = readInt(L"FocusDuration", 25 * 60);
+    s.restDuration   = readInt(L"RestDuration",   5 * 60);
+    s.loopCount      = readInt(L"LoopCount",      4);
+    s.currentLoop    = readInt(L"CurrentLoop",    0);
+    s.boundTodoUuid  = readStr(L"BoundTodoUuid");
+    s.currentRecordUuid = readStr(L"RecordUuid");
+    s.isRestPhase    = (readInt(L"IsRestPhase",   0) != 0);
+
+    // 超时检测：如果目标结束时间已过，重置为 Idle
+    if ((s.status == PomodoroStatus::Focusing || s.status == PomodoroStatus::Resting)
+        && s.targetEndMs > 0) {
+        long long nowMs = (long long)time(nullptr) * 1000LL;
+        if (nowMs >= s.targetEndMs) {
+            LogMessage(L"[番茄钟] 重启时检测到计时已结束，自动重置为 Idle");
+            s.status      = PomodoroStatus::Idle;
+            s.targetEndMs = 0;
+            s.currentRecordUuid.clear();
+            SavePomodoroSession();
+        }
+    }
+    LogMessage(L"[番茄钟] Session 已加载，Status=" + std::to_wstring((int)s.status));
+}
+
+void ApiFetchPomodoroTags() {
+    if (g_UserId <= 0 || g_AuthToken.empty()) return;
+    std::string res = SendRequest(L"/api/pomodoro/tags", "GET", "");
+    if (res.empty() || res.find("ERROR") == 0) {
+        LogMessage(L"[番茄钟] 拉取标签失败");
+        return;
+    }
+    try {
+        auto jArr = json::parse(res);
+        if (!jArr.is_array()) {
+            LogMessage(L"[番茄钟] 拉取标签响应非数组");
+            return;
+        }
+        std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
+        g_PomodoroTags.clear();
+        for (const auto &j : jArr) {
+            if (!j.is_object()) continue;
+            PomodoroTag tag;
+            // 安全读取（防止字段为 null）
+            auto safeStr = [&](const char* key, const std::string& def = "") -> std::string {
+                if (!j.contains(key)) return def;
+                const auto& v = j[key];
+                return (v.is_null() || !v.is_string()) ? def : v.get<std::string>();
+            };
+            auto safeInt = [&](const char* key, int def = 0) -> int {
+                if (!j.contains(key)) return def;
+                const auto& v = j[key];
+                return (v.is_null() || !v.is_number()) ? def : v.get<int>();
+            };
+            tag.uuid      = ToWide(safeStr("uuid"));
+            tag.name      = ToWide(safeStr("name"));
+            tag.color     = ToWide(safeStr("color", "#607D8B"));
+            tag.isDeleted = safeInt("is_deleted") != 0;
+            tag.version   = safeInt("version", 1);
+            if (j.contains("created_at") && j["created_at"].is_number())
+                tag.createdAt = j["created_at"].get<long long>();
+            if (j.contains("updated_at") && j["updated_at"].is_number())
+                tag.updatedAt = j["updated_at"].get<long long>();
+            if (!tag.uuid.empty())
+                g_PomodoroTags.push_back(tag);
+        }
+        LogMessage(L"[番茄钟] 拉取标签成功，共 " + std::to_wstring(g_PomodoroTags.size()) + L" 个");
+    } catch (const std::exception& e) {
+        LogMessage(L"[番茄钟] 拉取标签 JSON 解析失败: " + ToWide(e.what()));
+    } catch (...) {
+        LogMessage(L"[番茄钟] 拉取标签 JSON 解析失败（未知异常）");
+    }
+}
+
+void ApiSyncPomodoroTags() {
+    if (g_UserId <= 0 || g_AuthToken.empty()) return;
+
+    json tagsArr = json::array();
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
+        for (const auto &tag : g_PomodoroTags) {
+            if (!tag.isDirty) continue;
+            json j;
+            j["uuid"]       = ToUtf8(tag.uuid);
+            j["name"]       = ToUtf8(tag.name);
+            j["color"]      = ToUtf8(tag.color);
+            j["is_deleted"] = tag.isDeleted ? 1 : 0;
+            j["version"]    = tag.version;
+            j["created_at"] = tag.createdAt;
+            j["updated_at"] = tag.updatedAt;
+            tagsArr.push_back(j);
+        }
+    }
+    if (tagsArr.empty()) return;
+
+    json payload;
+    payload["tags"] = tagsArr;
+    std::string res = SendRequest(L"/api/pomodoro/tags", "POST", payload.dump());
+    if (res.empty() || res.find("ERROR") == 0) {
+        LogMessage(L"[番茄钟] 同步标签失败");
+        return;
+    }
+    try {
+        auto resp = json::parse(res);
+        if (resp.contains("success") && resp["success"].get<bool>()) {
+            // 若返回最新标签列表，直接替换本地
+            if (resp.contains("tags") && resp["tags"].is_array()) {
+                std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
+                g_PomodoroTags.clear();
+                for (const auto &j : resp["tags"]) {
+                    PomodoroTag tag;
+                    tag.uuid      = ToWide(j.value("uuid",  ""));
+                    tag.name      = ToWide(j.value("name",  ""));
+                    tag.color     = ToWide(j.value("color", "#607D8B"));
+                    tag.isDeleted = j.value("is_deleted", 0) != 0;
+                    tag.version   = j.value("version",    1);
+                    if (j.contains("created_at") && j["created_at"].is_number())
+                        tag.createdAt = j["created_at"].get<long long>();
+                    if (j.contains("updated_at") && j["updated_at"].is_number())
+                        tag.updatedAt = j["updated_at"].get<long long>();
+                    if (!tag.uuid.empty())
+                        g_PomodoroTags.push_back(tag);
+                }
+            }
+            LogMessage(L"[番茄钟] 标签同步成功");
+        }
+    } catch (...) {
+        LogMessage(L"[番茄钟] 同步标签响应解析失败");
+    }
+}
+
+bool ApiUploadPomodoroRecord(const PomodoroRecord &rec) {
+    if (g_UserId <= 0 || g_AuthToken.empty()) return false;
+
+    json r;
+    r["uuid"]             = ToUtf8(rec.uuid);
+    r["todo_uuid"]        = rec.todoUuid.empty() ? json(nullptr) : json(ToUtf8(rec.todoUuid));
+    r["start_time"]       = rec.startTime;
+    r["end_time"]         = (rec.endTime > 0) ? json(rec.endTime) : json(nullptr);
+    r["planned_duration"] = rec.plannedDuration;
+    r["actual_duration"]  = rec.actualDuration;
+    r["status"]           = ToUtf8(rec.status);
+    r["device_id"]        = ToUtf8(g_DeviceId);
+    r["is_deleted"]       = rec.isDeleted ? 1 : 0;
+    r["version"]          = rec.version;
+    r["created_at"]       = rec.createdAt;
+    r["updated_at"]       = rec.updatedAt;
+
+    json payload;
+    payload["record"] = r;
+    std::string res = SendRequest(L"/api/pomodoro/records", "POST", payload.dump());
+    if (res.empty() || res.find("ERROR") == 0) {
+        LogMessage(L"[番茄钟] 上传记录失败: " + ToWide(res));
+        return false;
+    }
+    try {
+        auto resp = json::parse(res);
+        bool ok = resp.contains("success") && resp["success"].get<bool>();
+        if (ok) LogMessage(L"[番茄钟] 记录上传成功: " + rec.uuid);
+        return ok;
+    } catch (...) { return false; }
+}
+
+void ApiFetchPomodoroHistory(long long fromMs, long long toMs) {
+    if (g_UserId <= 0 || g_AuthToken.empty()) return;
+    std::wstring url = L"/api/pomodoro/records?from=" + std::to_wstring(fromMs)
+                     + L"&to=" + std::to_wstring(toMs);
+    std::string res = SendRequest(url, "GET", "");
+    if (res.empty() || res.find("ERROR") == 0) {
+        LogMessage(L"[番茄钟] 拉取历史记录失败");
+        return;
+    }
+    try {
+        auto jArr = json::parse(res);
+        if (!jArr.is_array()) {
+            // 可能是 {"error":"..."} 格式的错误响应
+            LogMessage(L"[番茄钟] 历史记录响应非数组，raw=" + ToWide(res.substr(0, 200)));
+            return;
+        }
+        // 安全读取可能为 null 的字符串字段
+        auto safeStr = [](const json& j, const char* key, const std::string& def = "") -> std::string {
+            if (!j.contains(key)) return def;
+            const auto& v = j[key];
+            if (v.is_null() || !v.is_string()) return def;
+            return v.get<std::string>();
+        };
+        // 安全读取可能为 null 的整数字段
+        auto safeInt = [](const json& j, const char* key, int def = 0) -> int {
+            if (!j.contains(key)) return def;
+            const auto& v = j[key];
+            if (v.is_null()) return def;
+            if (v.is_number()) return v.get<int>();
+            return def;
+        };
+        // 安全读取可能为 null 的 long long 字段
+        auto safeLL = [](const json& j, const char* key, long long def = 0LL) -> long long {
+            if (!j.contains(key)) return def;
+            const auto& v = j[key];
+            if (v.is_null()) return def;
+            if (v.is_number()) return v.get<long long>();
+            return def;
+        };
+
+        std::lock_guard<std::recursive_mutex> lock(g_DataMutex);
+        g_PomodoroHistory.clear();
+        for (const auto &j : jArr) {
+            if (!j.is_object()) continue;
+            PomodoroRecord rec;
+            rec.uuid            = ToWide(safeStr(j, "uuid"));
+            rec.todoUuid        = ToWide(safeStr(j, "todo_uuid"));
+            rec.startTime       = safeLL(j, "start_time");
+            rec.endTime         = safeLL(j, "end_time");
+            rec.plannedDuration = safeInt(j, "planned_duration", 1500);
+            rec.actualDuration  = safeInt(j, "actual_duration",  0);
+            rec.status          = ToWide(safeStr(j, "status", "completed"));
+            rec.deviceId        = ToWide(safeStr(j, "device_id"));
+            rec.isDeleted       = safeInt(j, "is_deleted") != 0;
+            rec.version         = safeInt(j, "version", 1);
+            rec.createdAt       = safeLL(j, "created_at");
+            rec.updatedAt       = safeLL(j, "updated_at");
+            if (!rec.uuid.empty())
+                g_PomodoroHistory.push_back(rec);
+        }
+        LogMessage(L"[番茄钟] 历史记录已加载，共 " + std::to_wstring(g_PomodoroHistory.size()) + L" 条");
+    } catch (const std::exception& e) {
+        LogMessage(L"[番茄钟] 历史记录 JSON 解析失败: " + ToWide(e.what()));
+    } catch (...) {
+        LogMessage(L"[番茄钟] 历史记录 JSON 解析失败（未知异常）");
+    }
+}

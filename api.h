@@ -40,3 +40,20 @@ void ApiFetchCourses();
 void SaveLocalCourses();
 void LoadLocalCourses();
 
+// ────────────────────────────────────────────────
+// 🍅 番茄钟 API
+// ────────────────────────────────────────────────
+
+// 持久化番茄钟 Session（保存到 INI 以便重启恢复）
+void SavePomodoroSession();
+void LoadPomodoroSession();
+
+// 标签同步（Delta Sync，批量上传本地 isDirty 标签）
+void ApiFetchPomodoroTags();
+void ApiSyncPomodoroTags();
+
+// 记录上传（单条专注记录上传到后端）
+bool ApiUploadPomodoroRecord(const PomodoroRecord &rec);
+
+// 拉取历史记录（按时间范围）
+void ApiFetchPomodoroHistory(long long fromMs, long long toMs);

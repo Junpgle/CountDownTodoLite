@@ -106,6 +106,56 @@ struct AppUsageRecord {
     int seconds;
 };
 
+// ---  番茄钟数据结构 ---
+
+struct PomodoroTag {
+    std::wstring uuid;
+    std::wstring name;
+    std::wstring color;   // hex 颜色字符串，如 "#4F46E5"
+    bool isDeleted = false;
+    int  version   = 1;
+    long long createdAt = 0; // UTC ms
+    long long updatedAt = 0; // UTC ms
+    bool isDirty  = false;
+};
+
+enum class PomodoroStatus {
+    Idle,        // 未开始
+    Focusing,    // 专注中
+    Resting,     // 休息中
+    Paused,      // 已暂停（扩展用）
+};
+
+struct PomodoroSession {
+    // 持久化字段（INI）
+    PomodoroStatus status    = PomodoroStatus::Idle;
+    long long      targetEndMs = 0;  // 目标结束时间（UTC ms）；基于绝对时间戳
+    int            focusDuration  = 25 * 60; // 秒
+    int            restDuration   = 5  * 60; // 秒
+    int            loopCount      = 4;        // 总循环次数
+    int            currentLoop    = 0;        // 当前完成的循环数
+    std::wstring   boundTodoUuid;   // 当前绑定的待办 UUID
+    std::wstring   currentRecordUuid; // 当前进行中的专注记录 UUID
+    bool           isRestPhase = false; // true = 正在休息
+};
+
+struct PomodoroRecord {
+    std::wstring uuid;
+    std::wstring todoUuid;
+    long long    startTime       = 0;
+    long long    endTime         = 0;    // 0 = 未结束
+    int          plannedDuration = 1500;
+    int          actualDuration  = 0;
+    std::wstring status;   // "completed" / "interrupted" / "switched"
+    std::wstring deviceId;
+    bool         isDeleted = false;
+    int          version   = 1;
+    long long    createdAt = 0;
+    long long    updatedAt = 0;
+    bool         isDirty   = false;
+};
+
+// ...existing code...
 struct HitZone {
     Gdiplus::Rect rect;
     int id;
@@ -156,6 +206,11 @@ extern std::vector<Countdown> g_Countdowns;
 extern std::vector<HitZone> g_HitZones;
 extern std::vector<AppUsageRecord> g_AppUsage;
 extern std::vector<Course> g_Courses;
+
+// 番茄钟全局状态
+extern PomodoroSession g_PomodoroSession;
+extern std::vector<PomodoroTag> g_PomodoroTags;
+extern std::vector<PomodoroRecord> g_PomodoroHistory; // 本次会话的历史记录（统计用）
 
 namespace InputState {
     extern std::wstring result1;

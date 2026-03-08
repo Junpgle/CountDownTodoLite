@@ -46,6 +46,11 @@ std::vector<HitZone> g_HitZones;
 std::vector<AppUsageRecord> g_AppUsage;
 std::vector<Course> g_Courses;
 
+// 番茄钟全局状态
+PomodoroSession g_PomodoroSession;
+std::vector<PomodoroTag> g_PomodoroTags;
+std::vector<PomodoroRecord> g_PomodoroHistory;
+
 namespace InputState {
     std::wstring result1;
     std::wstring result2;

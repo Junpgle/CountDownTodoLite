@@ -19,6 +19,8 @@ add_executable(MathQuizLite
         weekly_view_window.h
         settings_window.h
         settings_window.cpp
+        pomodoro_window.h
+        pomodoro_window.cpp
         resource.h
         resources.rc
 )

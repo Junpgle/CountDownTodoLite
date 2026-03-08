@@ -5,6 +5,7 @@
 #include "stats_window.h"
 #include "weekly_view_window.h"
 #include "settings_window.h"
+#include "pomodoro_window.h"
 #include <commctrl.h>
 #include <algorithm>
 #include <ctime>
@@ -659,6 +660,7 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             HMENU hMenu = CreatePopupMenu();
             AppendMenuW(hMenu, MF_STRING, 2001, L"⚙  设置");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(hMenu, MF_STRING, 2006, L"🍅  番茄钟");
             AppendMenuW(hMenu, MF_STRING, 2002, L"📊  屏幕时间统计");
             AppendMenuW(hMenu, MF_STRING, 2003, L"⚡  立即同步");
             AppendMenuW(hMenu, MF_STRING, 2004, L"🔍  检查更新");
@@ -669,6 +671,7 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyMenu(hMenu);
 
             if      (cmd == 2001) ShowSettingsWindow(hWnd);
+            else if (cmd == 2006) ShowPomodoroWindow(hWnd);
             else if (cmd == 2002) ShowStatsWindow(hWnd);
             else if (cmd == 2003) std::thread([]() { SyncData(); }).detach();
             else if (cmd == 2004) CheckForUpdates(true);
