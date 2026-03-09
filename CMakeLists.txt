@@ -23,6 +23,8 @@ add_executable(MathQuizLite
         pomodoro_window.cpp
         pomodoro_stats_window.h
         pomodoro_stats_window.cpp
+        pomodoro_overlay.h
+        pomodoro_overlay.cpp
         ws_pomodoro.h
         ws_pomodoro.cpp
         resource.h

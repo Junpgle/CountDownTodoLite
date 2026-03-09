@@ -5,6 +5,7 @@
 #include "ws_pomodoro.h"
 #include "utils.h"
 #include "api.h"
+#include "pomodoro_overlay.h"
 #include <winhttp.h>
 #include <thread>
 #include <atomic>
@@ -82,6 +83,38 @@ static bool ExtractJsonBool(const std::string& json, const char* key, bool def =
     return def;
 }
 
+// 提取 JSON 字符串数组（简易实现，足以应对 tags 数组）
+// 格式："tags":["name1","name2",...]
+static std::vector<std::string> ExtractJsonStrArray(const std::string& json, const char* key) {
+    std::vector<std::string> result;
+    std::string k = std::string("\"") + key + "\"";
+    auto pos = json.find(k);
+    if (pos == std::string::npos) return result;
+    pos = json.find('[', pos + k.size());
+    if (pos == std::string::npos) return result;
+    auto end = json.find(']', pos);
+    if (end == std::string::npos) return result;
+    // 逐项解析
+    size_t cur = pos + 1;
+    while (cur < end) {
+        while (cur < end && (json[cur] == ' ' || json[cur] == ',')) cur++;
+        if (cur >= end) break;
+        if (json[cur] == '"') {
+            cur++;
+            std::string val;
+            while (cur < end && json[cur] != '"') {
+                if (json[cur] == '\\' && cur+1 < end) { cur++; }
+                val.push_back(json[cur++]);
+            }
+            if (!val.empty()) result.push_back(val);
+            cur++; // skip closing "
+        } else {
+            cur++;
+        }
+    }
+    return result;
+}
+
 // ============================================================
 // 发送文本帧（线程安全）
 // ============================================================
@@ -155,7 +188,7 @@ static void RecvLoop() {
         std::wstring srcDevW = ToWide(srcDev);
         if (srcDevW == g_DeviceId) continue;
 
-        if (action == "START" || action == "SYNC") {
+        if (action == "START" || action == "SYNC" || action == "SYNC_FOCUS") {
             // 🚀 兼容 Flutter 端字段名（targetEndMs / target_end_ms / endTime）
             long long targetEndMs = ExtractJsonLL(msg, "targetEndMs");
             if (targetEndMs == 0) targetEndMs = ExtractJsonLL(msg, "target_end_ms");
@@ -165,12 +198,17 @@ static void RecvLoop() {
             if (startTimeMs == 0) startTimeMs = ExtractJsonLL(msg, "startTime");
             if (startTimeMs == 0) startTimeMs = ExtractJsonLL(msg, "start_time");
 
-            // plannedSecs / planned_duration
+            // plannedSecs / planned_duration / duration（Flutter 端）
             int plannedSecs = ExtractJsonInt(msg, "plannedSecs", 0);
             if (plannedSecs == 0) {
                 int pd = ExtractJsonInt(msg, "planned_duration", 0);
-                plannedSecs = (pd > 0) ? pd : 1500;
+                if (pd > 0) plannedSecs = pd;
             }
+            if (plannedSecs == 0) {
+                int pd = ExtractJsonInt(msg, "duration", 0);
+                if (pd > 0) plannedSecs = pd;
+            }
+            if (plannedSecs == 0) plannedSecs = 1500;
 
             // todo_uuid：存起来，用于本地查找 + 同步回填
             std::string tuuid = ExtractJsonStr(msg, "todo_uuid");
@@ -194,6 +232,11 @@ static void RecvLoop() {
             bool isRest = ExtractJsonBool(msg, "isRest");
             if (!isRest) isRest = ExtractJsonBool(msg, "is_rest");
 
+            // tags 数组 —— 服务器转发的是明文名字字符串数组，直接用
+            auto tagNamesRaw = ExtractJsonStrArray(msg, "tags");
+            std::vector<std::wstring> tagNamesW;
+            for (const auto& tn : tagNamesRaw) tagNamesW.push_back(ToWide(tn));
+
             // 推算 targetEndMs
             long long nowMs = (long long)time(nullptr) * 1000LL;
             if (targetEndMs == 0 && startTimeMs > 0)
@@ -201,11 +244,12 @@ static void RecvLoop() {
             if (targetEndMs == 0)
                 targetEndMs = nowMs + (long long)plannedSecs * 1000LL;
 
+            RemoteFocusState rf;
             {
                 std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
                 g_RemoteFocus.active        = true;
                 g_RemoteFocus.sourceDevice  = srcDevW;
-                g_RemoteFocus.todoUuid      = todoUuidW;   // 🚀 存 UUID
+                g_RemoteFocus.todoUuid      = todoUuidW;
                 g_RemoteFocus.todoContent   = todoContent;
                 g_RemoteFocus.targetEndMs   = targetEndMs;
                 g_RemoteFocus.startTimeMs   = startTimeMs > 0
@@ -214,8 +258,13 @@ static void RecvLoop() {
                 g_RemoteFocus.plannedSecs   = plannedSecs;
                 g_RemoteFocus.isRestPhase   = isRest;
                 g_RemoteFocus.receivedAt    = nowMs;
+                if (!tagNamesW.empty())
+                    g_RemoteFocus.tagNames  = tagNamesW;
+                rf = g_RemoteFocus;   // 拷贝快照
             }
             if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+            // 🚀 通过 PostMessage 把快照推给主线程显示 overlay（避免跨线程 GDI）
+            NotifyOverlayRemoteFocus(rf);
             LogMessage(L"[WS番茄钟] 远端专注 from=" + srcDevW
                 + L" end=" + std::to_wstring(targetEndMs)
                 + L" planned=" + std::to_wstring(plannedSecs)
@@ -225,20 +274,28 @@ static void RecvLoop() {
             if (!tuuid.empty() && todoContent.empty()) {
                 LogMessage(L"[WS番茄钟] 绑定任务本地未找到，触发增量同步回填...");
                 std::thread([todoUuidW]() {
-                    Sleep(300); // 稍等窗口刷新完
-                    SyncData(); // 增量同步拉取最新待办
-                    // 同步完成后尝试回填 todoContent
-                    std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
-                    if (g_RemoteFocus.active && g_RemoteFocus.todoUuid == todoUuidW
-                        && g_RemoteFocus.todoContent.empty()) {
-                        for (const auto& t : g_Todos) {
-                            if (t.uuid == todoUuidW) {
-                                g_RemoteFocus.todoContent = t.content;
-                                if (g_hWidgetWnd)
-                                    PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
-                                break;
+                    Sleep(300);
+                    SyncData();
+                    RemoteFocusState rf2;
+                    bool changed = false;
+                    {
+                        std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+                        if (g_RemoteFocus.active && g_RemoteFocus.todoUuid == todoUuidW
+                            && g_RemoteFocus.todoContent.empty()) {
+                            for (const auto& t : g_Todos) {
+                                if (t.uuid == todoUuidW) {
+                                    g_RemoteFocus.todoContent = t.content;
+                                    changed = true;
+                                    break;
+                                }
                             }
                         }
+                        rf2 = g_RemoteFocus;
+                    }
+                    if (changed) {
+                        if (g_hWidgetWnd)
+                            PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+                        NotifyOverlayRemoteFocus(rf2);
                     }
                 }).detach();
             }
@@ -249,6 +306,8 @@ static void RecvLoop() {
                 g_RemoteFocus = RemoteFocusState{};
             }
             if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+            // 🚀 通过 PostMessage 通知主线程隐藏 overlay（WS线程不能直接操作窗口）
+            NotifyOverlayRemoteStop();
             LogMessage(L"[WS番茄钟] 远端专注结束 from=" + srcDevW);
 
         } else if (action == "SWITCH") {
@@ -275,35 +334,59 @@ static void RecvLoop() {
 
             {
                 std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
-                // 只有当前还在专注状态才更新（防止乱序消息）
                 if (g_RemoteFocus.active) {
                     g_RemoteFocus.todoUuid    = todoUuidW;
                     g_RemoteFocus.todoContent = todoContent;
                 }
             }
             if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+            // 同步推给 overlay
+            {
+                std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+                if (g_RemoteFocus.active) NotifyOverlayRemoteFocus(g_RemoteFocus);
+            }
             LogMessage(L"[WS番茄钟] 远端切换任务 from=" + srcDevW
                 + L" uuid=" + todoUuidW + L" title=" + todoContent);
 
-            // 若本地没找到标题，后台同步回填
             if (!tuuid.empty() && todoContent.empty()) {
                 std::thread([todoUuidW]() {
                     Sleep(300);
                     SyncData();
-                    std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
-                    if (g_RemoteFocus.active && g_RemoteFocus.todoUuid == todoUuidW
-                        && g_RemoteFocus.todoContent.empty()) {
-                        for (const auto& t : g_Todos) {
-                            if (t.uuid == todoUuidW) {
-                                g_RemoteFocus.todoContent = t.content;
-                                if (g_hWidgetWnd)
-                                    PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
-                                break;
+                    RemoteFocusState rf3;
+                    bool changed = false;
+                    {
+                        std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+                        if (g_RemoteFocus.active && g_RemoteFocus.todoUuid == todoUuidW
+                            && g_RemoteFocus.todoContent.empty()) {
+                            for (const auto& t : g_Todos) {
+                                if (t.uuid == todoUuidW) {
+                                    g_RemoteFocus.todoContent = t.content;
+                                    changed = true;
+                                    break;
+                                }
                             }
                         }
+                        rf3 = g_RemoteFocus;
+                    }
+                    if (changed) {
+                        if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+                        NotifyOverlayRemoteFocus(rf3);
                     }
                 }).detach();
             }
+
+        } else if (action == "SYNC_TAGS" || action == "UPDATE_TAGS") {
+            auto tagNamesRaw = ExtractJsonStrArray(msg, "tags");
+            std::vector<std::wstring> tagNamesW;
+            for (const auto& tn : tagNamesRaw) tagNamesW.push_back(ToWide(tn));
+            {
+                std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+                g_RemoteFocus.tagNames = tagNamesW;
+                if (g_RemoteFocus.active) NotifyOverlayRemoteFocus(g_RemoteFocus);
+            }
+            if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
+            LogMessage(L"[WS番茄钟] 标签更新 from=" + srcDevW
+                + L" count=" + std::to_wstring(tagNamesW.size()));
         }
     }
 
@@ -465,29 +548,52 @@ void WsPomodoroDisconnect() {
     g_RemoteFocus = RemoteFocusState{};
 }
 
+// 辅助：把 wstring 列表序列化成 JSON 字符串数组 ["a","b",...]
+static std::string BuildTagsArray(const std::vector<std::wstring>& names) {
+    std::string out = "[";
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i) out += ",";
+        out += "\"" + JsonEscape(ToUtf8(names[i])) + "\"";
+    }
+    out += "]";
+    return out;
+}
+
 void WsPomodoroSendStart(long long targetEndMs, int plannedSecs,
                           const std::wstring& todoContent,
                           const std::wstring& todoUuid,
-                          bool isRest)
+                          bool isRest,
+                          const std::vector<std::wstring>& tagNames)
 {
     if (!s_Connected) return;
     long long nowMs = (long long)time(nullptr) * 1000LL;
-    std::string content = JsonEscape(ToUtf8(todoContent));
-    std::string uuid    = JsonEscape(ToUtf8(todoUuid));
+    std::string content  = JsonEscape(ToUtf8(todoContent));
+    std::string uuid     = JsonEscape(ToUtf8(todoUuid));
+    std::string tagsJson = BuildTagsArray(tagNames);
     std::ostringstream ss;
     ss << "{"
        << "\"action\":\"START\","
-       << "\"targetEndMs\":" << targetEndMs << ","
-       << "\"plannedSecs\":" << plannedSecs  << ","
-       << "\"todoContent\":\"" << content   << "\","
-       << "\"todo_title\":\""  << content   << "\","
-       << "\"todo_uuid\":\""   << uuid      << "\","
+       << "\"targetEndMs\":" << targetEndMs  << ","
+       << "\"plannedSecs\":" << plannedSecs   << ","
+       << "\"todoContent\":\"" << content    << "\","
+       << "\"todo_title\":\""  << content    << "\","
+       << "\"todo_uuid\":\""   << uuid       << "\","
        << "\"isRest\":"    << (isRest ? "true" : "false") << ","
+       << "\"tags\":"      << tagsJson        << ","
        << "\"timestamp\":" << nowMs
        << "}";
     WsSend(ss.str());
     LogMessage(L"[WS番茄钟] 已发送 START end=" + std::to_wstring(targetEndMs)
-               + L" uuid=" + todoUuid);
+               + L" uuid=" + todoUuid
+               + L" tags=" + std::to_wstring(tagNames.size()));
+}
+
+void WsPomodoroSendUpdateTags(const std::vector<std::wstring>& tagNames) {
+    if (!s_Connected) return;
+    std::string tagsJson = BuildTagsArray(tagNames);
+    std::string msg = "{\"action\":\"UPDATE_TAGS\",\"tags\":" + tagsJson + "}";
+    WsSend(msg);
+    LogMessage(L"[WS番茄钟] 已发送 UPDATE_TAGS count=" + std::to_wstring(tagNames.size()));
 }
 
 void WsPomodoroSendStop() {

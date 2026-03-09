@@ -61,3 +61,9 @@ namespace InputState {
     std::wstring result4; // 备注 remark
     bool isOk = false;
 }
+
+// Define global variables for window position and size
+int g_WindowPosX = 100;
+int g_WindowPosY = 100;
+int g_WindowWidth = 800;
+int g_WindowHeight = 600;

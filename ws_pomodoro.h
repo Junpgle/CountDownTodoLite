@@ -4,10 +4,6 @@
 // ============================================================
 // ws_pomodoro.h
 // 番茄钟跨端 WebSocket 实时感知
-// 职责：
-//   - 登录后连接 WS 服务器（ws://host:8081?userId=X&deviceId=Y）
-//   - 发起端：开始/停止/中断时发送 START/STOP/INTERRUPT
-//   - 接收端：收到 START/SYNC/STOP 后更新 g_RemoteFocus，触发窗口重绘
 // ============================================================
 
 // 连接（登录成功后调用；已连接则无操作）
@@ -22,11 +18,15 @@ void WsPomodoroDisconnect();
 // todoContent   : 绑定待办内容（可为空）
 // todoUuid      : 绑定待办 UUID（可为空），供对端直接展示标题
 // isRest        : 是否休息阶段
+// tagNames      : 当前选中标签的「名字」字符串列表（明文，直接放 JSON 数组）
 void WsPomodoroSendStart(long long targetEndMs, int plannedSecs,
                           const std::wstring& todoContent,
                           const std::wstring& todoUuid = L"",
-                          bool isRest = false);
+                          bool isRest = false,
+                          const std::vector<std::wstring>& tagNames = {});
+
+// 仅更新标签（不改变倒计时）
+void WsPomodoroSendUpdateTags(const std::vector<std::wstring>& tagNames);
 
 // 发送 STOP / INTERRUPT 消息（本机停止或中断时调用）
 void WsPomodoroSendStop();
-

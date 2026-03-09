@@ -5,6 +5,7 @@
  */
 #include "pomodoro_window.h"
 #include "pomodoro_stats_window.h"
+#include "pomodoro_overlay.h"
 #include "ws_pomodoro.h"
 #include "common.h"
 #include "utils.h"
@@ -64,6 +65,16 @@ static const int HIST_PER_PAGE = 5;
 static int s_ScrollY   = 0;
 static int s_ContentH  = 0;
 static int s_WinH      = 0;
+
+// 辅助：将 s_SelTags（uuid 列表）转为标签名字列表（明文，供 WebSocket 明文发送）
+// ⚠️ 调用方自行加锁或在已持锁状态下调用
+static std::vector<std::wstring> GetSelTagNames() {
+    std::vector<std::wstring> names;
+    for (const auto& uid : s_SelTags)
+        for (const auto& tag : g_PomodoroTags)
+            if (tag.uuid == uid && !tag.isDeleted) { names.push_back(tag.name); break; }
+    return names;
+}
 // ============================================================
 // 辅助：生成 UUID
 // ============================================================
@@ -737,12 +748,14 @@ static void HandleTimerTick() {
             s.targetEndMs       = nowMs + (long long)s.focusDuration * 1000LL;
 
             std::wstring todoContent;
+            std::vector<std::wstring> tagNames;
             {
                 std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
                 for (const auto& t : g_Todos)
                     if (t.uuid == s.boundTodoUuid) { todoContent = t.content; break; }
+                tagNames = GetSelTagNames();
             }
-            WsPomodoroSendStart(s.targetEndMs, s.focusDuration, todoContent, s.boundTodoUuid, false);
+            WsPomodoroSendStart(s.targetEndMs, s.focusDuration, todoContent, s.boundTodoUuid, false, tagNames);
             SavePomodoroSession();
             PomodoroRender();
             MessageBoxW(s_hWnd, L"休息结束！开始下一轮专注。", L"番茄钟", MB_ICONINFORMATION);
@@ -786,13 +799,13 @@ static void HandleHit(int hitId) {
         s.boundTodoUuid     = s_BoundTodo;
         s.targetEndMs       = nowMs + (long long)s.focusDuration * 1000LL;
         SavePomodoroSession();
-        // 🚀 WS 广播：本机开始专注
+        // 🚀 WS 广播：本机开始专注，携带标签名
         {
             std::wstring todoContent;
             std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
             for (const auto& t : g_Todos)
                 if (t.uuid == s_BoundTodo) { todoContent = t.content; break; }
-            WsPomodoroSendStart(s.targetEndMs, s.focusDuration, todoContent, s_BoundTodo, false);
+            WsPomodoroSendStart(s.targetEndMs, s.focusDuration, todoContent, s_BoundTodo, false, GetSelTagNames());
         }
     }
     else if (hitId == PH_BTN_STOP) {
@@ -819,7 +832,7 @@ static void HandleHit(int hitId) {
                 s.isRestPhase = true;
                 s.status      = PomodoroStatus::Resting;
                 s.targetEndMs = nowMs + (long long)s.restDuration * 1000LL;
-                // 🚀 通知其他端进入休息阶段
+                // 🚀 进入休息阶段（不带待办/标签）
                 WsPomodoroSendStart(s.targetEndMs, s.restDuration, L"", L"", true);
             }
         } else {
@@ -827,13 +840,13 @@ static void HandleHit(int hitId) {
             s.status            = PomodoroStatus::Focusing;
             s.currentRecordUuid = GenUuid();
             s.targetEndMs       = nowMs + (long long)s.focusDuration * 1000LL;
-            // 🚀 通知其他端跳过休息，继续专注
+            // 🚀 跳过休息继续专注，携带标签名
             {
                 std::wstring todoContent;
                 std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
                 for (const auto& t : g_Todos)
                     if (t.uuid == s.boundTodoUuid) { todoContent = t.content; break; }
-                WsPomodoroSendStart(s.targetEndMs, s.focusDuration, todoContent, s.boundTodoUuid, false);
+                WsPomodoroSendStart(s.targetEndMs, s.focusDuration, todoContent, s.boundTodoUuid, false, GetSelTagNames());
             }
         }
         SavePomodoroSession();
@@ -846,17 +859,24 @@ static void HandleHit(int hitId) {
     else if (hitId == PH_LOOP_INC)  { if (s.loopCount < 12)        s.loopCount++;             SavePomodoroSession(); }
     else if (hitId >= PH_TAG_BASE && hitId < PH_TODO_BASE) {
         int idx = hitId - PH_TAG_BASE;
-        std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
-        int cur = 0;
-        for (const auto& tag : g_PomodoroTags) {
-            if (tag.isDeleted) continue;
-            if (cur == idx) {
-                auto it = std::find(s_SelTags.begin(), s_SelTags.end(), tag.uuid);
-                if (it != s_SelTags.end()) s_SelTags.erase(it);
-                else s_SelTags.push_back(tag.uuid);
-                break;
+        {
+            std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+            int cur = 0;
+            for (const auto& tag : g_PomodoroTags) {
+                if (tag.isDeleted) continue;
+                if (cur == idx) {
+                    auto it = std::find(s_SelTags.begin(), s_SelTags.end(), tag.uuid);
+                    if (it != s_SelTags.end()) s_SelTags.erase(it);
+                    else s_SelTags.push_back(tag.uuid);
+                    break;
+                }
+                cur++;
             }
-            cur++;
+        }
+        // 🚀 专注中：实时广播标签变更（明文名字）
+        if (g_PomodoroSession.status != PomodoroStatus::Idle) {
+            std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+            WsPomodoroSendUpdateTags(GetSelTagNames());
         }
     }
     else if (hitId >= PH_TODO_BASE && hitId < PH_HIST_REFRESH) {

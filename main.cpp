@@ -4,6 +4,7 @@
 #include "ui.h"
 #include "tai_reader.h"
 #include "ws_pomodoro.h"
+#include "pomodoro_overlay.h"
 // 引入资源头文件
 #include "resource.h"
 #include <thread>
@@ -308,6 +309,9 @@ int APIENTRY WinMain(HINSTANCE hI, HINSTANCE, LPSTR, int nC) {
 
         // 🚀 登录成功后立即连接番茄钟跨端 WebSocket
         WsPomodoroConnect();
+
+        // 🚀 预创建 overlay 隐藏窗口（主线程），确保 WS 收到跨端消息时可 PostMessage
+        InitPomodoroOverlay();
 
         // --- 程序启动时立即进行一次云端数据同步 ---
         std::thread([]() {

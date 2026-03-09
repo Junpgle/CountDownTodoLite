@@ -75,16 +75,20 @@ static const wchar_t* PAGE_TITLES[PAGE_COUNT] = {
 // ============================================================
 static int  s_Page     = PAGE_APPEARANCE;
 static int  s_HoverNav = -1;
-static HWND s_hWnd     = NULL;
-static HWND s_hParent  = NULL;
+static HWND s_hWnd     = nullptr;
+static HWND s_hParent  = nullptr;
 
-static HWND s_hAlphaEdit    = NULL;
-static HWND s_hAlphaSlider  = NULL;
-static HWND s_hTaiPathEdit  = NULL;
-static HWND s_hSyncEdit     = NULL;
-static HWND s_hOldPassEdit  = NULL;
-static HWND s_hNewPassEdit  = NULL;
-static HWND s_hConfPassEdit = NULL;
+static HWND s_hAlphaEdit    = nullptr;
+static HWND s_hAlphaSlider  = nullptr;
+static HWND s_hTaiPathEdit  = nullptr;
+static HWND s_hSyncEdit     = nullptr;
+static HWND s_hOldPassEdit  = nullptr;
+static HWND s_hNewPassEdit  = nullptr;
+static HWND s_hConfPassEdit = nullptr;
+static HWND s_hPosXEdit     = nullptr;
+static HWND s_hPosYEdit     = nullptr;
+static HWND s_hWidthEdit    = nullptr;
+static HWND s_hHeightEdit   = nullptr;
 
 static std::wstring s_StatusMsg;
 static bool         s_StatusOk = true;
@@ -93,7 +97,7 @@ struct SettingsHitZone { Rect rect; int id; };
 static std::vector<SettingsHitZone> s_HitZones;
 
 // 全局字体句柄（避免每帧泄漏）
-static HFONT s_hFont = NULL;
+static HFONT s_hFont = nullptr;
 
 enum HitId {
     HIT_NAV_BASE     = 100,
@@ -165,7 +169,7 @@ static void DrawRow(Graphics& g, float x, float y, float w,
     SolidBrush lb(C_TEXT), vb(C_SUB);
 
     // label 固定 80px 宽，超长截断
-    float labelW = (float)S(80);
+    auto labelW = static_cast<float>(S(80));
     RectF lRect(x, y, labelW, (REAL)S(22));
     StringFormat sfL;
     sfL.SetTrimming(StringTrimmingEllipsisCharacter);
@@ -227,6 +231,14 @@ static void DrawDivider(Graphics& g, float x, float y, float w) {
     g.DrawLine(&p, x, y, x + w, y);
 }
 
+static void DrawLabel(Graphics& g, float x, float y, const wchar_t* text) {
+    FontFamily& ff = *g_MiSansFamily;
+    Font fLabel(&ff, (REAL)S(13), FontStyleBold, UnitPixel);
+    SolidBrush lb(C_TEXT);
+    g.DrawString(text, -1, &fLabel, PointF(x, y + S(4)), &lb);
+}
+
+
 // ============================================================
 // 销毁当前页子控件
 // ============================================================
@@ -234,10 +246,11 @@ static void DestroyPageControls() {
     HWND* handles[] = {
         &s_hAlphaEdit, &s_hAlphaSlider,
         &s_hTaiPathEdit, &s_hSyncEdit,
-        &s_hOldPassEdit, &s_hNewPassEdit, &s_hConfPassEdit
+        &s_hOldPassEdit, &s_hNewPassEdit, &s_hConfPassEdit,
+        &s_hPosXEdit, &s_hPosYEdit, &s_hWidthEdit, &s_hHeightEdit
     };
     for (auto* h : handles) {
-        if (*h && IsWindow(*h)) { DestroyWindow(*h); *h = NULL; }
+        if (*h && IsWindow(*h)) { DestroyWindow(*h); *h = nullptr; }
     }
 }
 
@@ -263,13 +276,14 @@ static void DrawPageAppearance(Graphics& g, float cx, float cy, float cw, float 
     FontFamily& ff = *g_MiSansFamily;
     Font fSub(&ff, (REAL)S(12), FontStyleRegular, UnitPixel);
     SolidBrush subBr(C_SUB);
-    std::wstring pct = std::to_wstring((int)(g_BgAlpha / 255.0f * 100)) + L"%";
+    float pctValue = static_cast<float>(g_BgAlpha) / 255.0f * 100;
+    std::wstring pct = std::to_wstring(static_cast<int>(pctValue)) + L"%";
     RectF pctRect(x + S(16), iy, (REAL)S(60), (REAL)S(20));
     StringFormat sfPct; sfPct.SetFormatFlags(StringFormatFlagsNoWrap);
     g.DrawString(pct.c_str(), -1, &fSub, pctRect, &sfPct, &subBr);
 
     // 滑块（宽度留出右侧输入框+按钮）
-    int sliderW = (int)(w - S(110));
+    int sliderW = static_cast<int>(w - S(110));
     if (!s_hAlphaSlider) {
         INITCOMMONCONTROLSEX icex = { sizeof(icex), ICC_BAR_CLASSES };
         InitCommonControlsEx(&icex);
@@ -277,7 +291,7 @@ static void DrawPageAppearance(Graphics& g, float cx, float cy, float cw, float 
             WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS | TBS_BOTH,
             (int)(x + S(16)), (int)(iy + S(22)),
             sliderW, S(26),
-            s_hWnd, (HMENU)3001, GetModuleHandle(NULL), NULL);
+            s_hWnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
         SendMessage(s_hAlphaSlider, TBM_SETRANGE, TRUE, MAKELPARAM(10, 255));
         SendMessage(s_hAlphaSlider, TBM_SETPOS,   TRUE, g_BgAlpha);
         ShowWindow(s_hAlphaSlider, SW_SHOW);
@@ -290,7 +304,7 @@ static void DrawPageAppearance(Graphics& g, float cx, float cy, float cw, float 
             WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
             (int)(x + S(16) + sliderW + S(8)), (int)(iy + S(22)),
             S(52), S(26),
-            s_hWnd, (HMENU)3002, GetModuleHandle(NULL), NULL);
+            s_hWnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
         ShowWindow(s_hAlphaEdit, SW_SHOW);
     }
     // 应用按钮
@@ -302,7 +316,7 @@ static void DrawPageAppearance(Graphics& g, float cx, float cy, float cw, float 
     y += S(115) + S(12);
 
     // 卡片2：字体选择
-    float fontCardH = (REAL)S(96);
+    auto fontCardH = static_cast<REAL>(S(96));
     DrawCard(g, x, y, w, fontCardH, L"界面字体");
     {
         float iy2 = y + S(48);
@@ -329,6 +343,60 @@ static void DrawPageAppearance(Graphics& g, float cx, float cy, float cw, float 
         DrawOptionBtn(g, x + S(16),                  iy3 + S(10), bw, (REAL)S(36), L"前 3 名",  g_TopAppsCount == 3,  HIT_TOP3);
         DrawOptionBtn(g, x + S(16) + bw + S(8),       iy3 + S(10), bw, (REAL)S(36), L"前 5 名",  g_TopAppsCount == 5,  HIT_TOP5);
         DrawOptionBtn(g, x + S(16) + (bw + S(8)) * 2, iy3 + S(10), bw, (REAL)S(36), L"前 10 名", g_TopAppsCount == 10, HIT_TOP10);
+    }
+    y += S(96) + S(12);
+
+    // 卡片3：窗口位置
+    DrawCard(g, x, y, w, (REAL)S(115), L"窗口位置");
+    {
+        float iy3 = y + S(48);
+        DrawLabel(g, static_cast<float>(x + S(16)), static_cast<float>(iy3), L"X:");
+        if (!s_hPosXEdit) {
+            s_hPosXEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+                std::to_wstring(g_WindowPosX).c_str(),
+                WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+                (int)(x + S(40)), (int)(iy3),
+                S(60), S(26),
+                s_hWnd, (HMENU)3003, GetModuleHandle(nullptr), nullptr);
+            ShowWindow(s_hPosXEdit, SW_SHOW);
+        }
+        DrawLabel(g, static_cast<float>(x + S(120)), static_cast<float>(iy3), L"Y:");
+        if (!s_hPosYEdit) {
+            s_hPosYEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+                std::to_wstring(g_WindowPosY).c_str(),
+                WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+                (int)(x + S(140)), (int)(iy3),
+                S(60), S(26),
+                s_hWnd, (HMENU)3004, GetModuleHandle(nullptr), nullptr);
+            ShowWindow(s_hPosYEdit, SW_SHOW);
+        }
+    }
+
+    // 卡片4：窗口大小
+    y += S(115) + S(12);
+    DrawCard(g, x, y, w, (REAL)S(115), L"窗口大小");
+    {
+        float iy4 = y + S(48);
+        DrawLabel(g, static_cast<float>(x + S(16)), static_cast<float>(iy4), L"宽度:");
+        if (!s_hWidthEdit) {
+            s_hWidthEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+                std::to_wstring(g_WindowWidth).c_str(),
+                WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+                (int)(x + S(60)), (int)(iy4),
+                S(60), S(26),
+                s_hWnd, (HMENU)3005, GetModuleHandle(nullptr), nullptr);
+            ShowWindow(s_hWidthEdit, SW_SHOW);
+        }
+        DrawLabel(g, static_cast<float>(x + S(140)), static_cast<float>(iy4), L"高度:");
+        if (!s_hHeightEdit) {
+            s_hHeightEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+                std::to_wstring(g_WindowHeight).c_str(),
+                WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+                (int)(x + S(180)), (int)(iy4),
+                S(60), S(26),
+                s_hWnd, (HMENU)3006, GetModuleHandle(nullptr), nullptr);
+            ShowWindow(s_hHeightEdit, SW_SHOW);
+        }
     }
 }
 
@@ -357,7 +425,7 @@ static void DrawPageDatasource(Graphics& g, float cx, float cy, float cw, float 
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
             (int)(x + S(16)), (int)(iy + S(38)),
             (int)editW, S(26),
-            s_hWnd, (HMENU)3010, GetModuleHandle(NULL), NULL);
+            s_hWnd, (HMENU)3010, GetModuleHandle(nullptr), nullptr);
         ShowWindow(s_hTaiPathEdit, SW_SHOW);
     }
     DrawButton(g, x + S(16) + editW + S(6),             iy + S(38), S(48), S(26),
@@ -391,7 +459,7 @@ static void DrawPageAccount(Graphics& g, float cx, float cy, float cw, float ch)
     y += S(128) + S(12);
 
     // 卡片2：修改密码（高度 220 = 48头 + 3*(28+14) + 按钮44 + 余量）
-    float passCardH = (REAL)S(220);
+    float passCardH = static_cast<float>(S(220));
     iy = DrawCard(g, x, y, w, passCardH, L"修改密码");
 
     FontFamily& ff = *g_MiSansFamily;
@@ -399,10 +467,10 @@ static void DrawPageAccount(Graphics& g, float cx, float cy, float cw, float ch)
     SolidBrush lb(C_TEXT);
 
     // label 宽 70，edit 从 label 右侧开始，宽度 = 卡片宽 - 左边距 - label宽 - 右边距
-    float labelW   = (float)S(70);
+    auto labelW   = static_cast<float>(S(70));
     float editX    = x + S(16) + labelW + S(8);
     float editW    = w - S(32) - labelW - S(8);
-    float rowStep  = (float)S(44);
+    float rowStep  = static_cast<float>(S(44));
 
     struct { const wchar_t* label; HWND* handle; UINT id; } fields[3] = {
         { L"当前密码", &s_hOldPassEdit,  3020 },
@@ -410,14 +478,14 @@ static void DrawPageAccount(Graphics& g, float cx, float cy, float cw, float ch)
         { L"确认密码", &s_hConfPassEdit, 3022 },
     };
     for (int i = 0; i < 3; i++) {
-        float fy = iy + i * rowStep;
+        float fy = static_cast<float>(iy + i * rowStep);
         g.DrawString(fields[i].label, -1, &fLabel, PointF(x + S(16), fy + S(5)), &lb);
         if (!*fields[i].handle) {
             *fields[i].handle = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                 WS_CHILD | WS_VISIBLE | ES_PASSWORD,
                 (int)editX, (int)fy,
                 (int)editW, S(28),
-                s_hWnd, (HMENU)(UINT_PTR)fields[i].id, GetModuleHandle(NULL), NULL);
+                s_hWnd, (HMENU)(UINT_PTR)fields[i].id, GetModuleHandle(nullptr), nullptr);
             ShowWindow(*fields[i].handle, SW_SHOW);
         }
     }
@@ -500,7 +568,7 @@ static void DrawPageSync(Graphics& g, float cx, float cy, float cw, float ch) {
             WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
             (int)customX, (int)customY,
             (int)bw, S(34),
-            s_hWnd, (HMENU)3030, GetModuleHandle(NULL), NULL);
+            s_hWnd, (HMENU)3030, GetModuleHandle(nullptr), nullptr);
         ShowWindow(s_hSyncEdit, SW_SHOW);
     }
     s_HitZones.push_back({Rect((int)customX,(int)customY,(int)bw,S(34)), HIT_SYNC_CUSTOM});
@@ -581,7 +649,7 @@ static void DrawPageAbout(Graphics& g, float cx, float cy, float cw, float ch) {
     };
     Font fInfo(&ff, (REAL)S(12), FontStyleRegular, UnitPixel);
     for (int i = 0; i < 5; i++) {
-        float ry = iy + S(62) + i * S(28);
+        float ry = static_cast<float>(iy + S(62) + i * S(28));
         SolidBrush kb(C_ACCENT);
         g.DrawString(info[i].k, -1, &fInfo, PointF(x + S(16), ry), &kb);
         RectF vr(x + S(80), ry, w - S(96), (REAL)S(22));
@@ -620,11 +688,11 @@ static void DrawSettings(Graphics& g, int width, int height) {
 
     // 导航项
     Font fNav(&ff, (REAL)S(13), FontStyleRegular, UnitPixel);
-    for (int i = 0; i < PAGE_COUNT; i++) {
-        float ny  = (REAL)(S(62) + i * S(44));
-        float nh  = (REAL)S(36);
-        bool sel  = (s_Page == i);
-        bool hov  = (s_HoverNav == i);
+    for (auto i = 0; i < PAGE_COUNT; i++) {
+        auto ny  = static_cast<float>(S(62) + i * S(44));
+        auto nh  = static_cast<float>(S(36));
+        auto sel  = (s_Page == i);
+        auto hov  = (s_HoverNav == i);
 
         // 选中/悬停背景
         if (sel || hov) {
@@ -654,9 +722,9 @@ static void DrawSettings(Graphics& g, int width, int height) {
     }
 
     // --- 右侧内容区 ---
-    float cx  = (float)navW;
-    float cw  = (float)(width - navW);
-    float ch  = (float)height;
+    float cx  = static_cast<float>(navW);
+    float cw  = static_cast<float>(width - navW);
+    float ch  = static_cast<float>(height);
 
     // 设置裁剪区域，防止内容溢出到导航栏或窗口外
     RectF clipRect(cx, 0, cw, (float)height);
@@ -668,7 +736,7 @@ static void DrawSettings(Graphics& g, int width, int height) {
                  PointF(cx + S(20), (REAL)S(16)), &textBr);
     DrawDivider(g, cx + S(16), (float)S(48), cw - S(32));
 
-    float pageY = (float)S(56);
+    float pageY = static_cast<float>(S(56));
 
     switch (s_Page) {
         case PAGE_APPEARANCE: DrawPageAppearance(g, cx, pageY, cw, ch - pageY); break;
@@ -701,7 +769,7 @@ static void SwitchPage(int page) {
     DestroyPageControls();
     s_StatusMsg.clear();
     s_Page = page;
-    InvalidateRect(s_hWnd, NULL, FALSE);
+    InvalidateRect(s_hWnd, nullptr, FALSE);
     UpdateWindow(s_hWnd);       // 触发 WM_PAINT，子控件在 DrawPageXxx 里创建
     ApplyFontToChildren();      // 子控件创建完毕后统一设字体
 }
@@ -730,12 +798,12 @@ static void HandleHit(HWND hWnd, int hitId) {
         }
         SaveAlphaSetting();
         if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
-        InvalidateRect(hWnd, NULL, FALSE);
+        InvalidateRect(hWnd, nullptr, FALSE);
         break;
     }
-    case HIT_TOP3:  g_TopAppsCount = 3;  SaveAlphaSetting(); if(g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH,0,0); InvalidateRect(hWnd,NULL,FALSE); break;
-    case HIT_TOP5:  g_TopAppsCount = 5;  SaveAlphaSetting(); if(g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH,0,0); InvalidateRect(hWnd,NULL,FALSE); break;
-    case HIT_TOP10: g_TopAppsCount = 10; SaveAlphaSetting(); if(g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH,0,0); InvalidateRect(hWnd,NULL,FALSE); break;
+    case HIT_TOP3:  g_TopAppsCount = 3;  SaveAlphaSetting(); if(g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH,0,0); InvalidateRect(hWnd,nullptr,FALSE); break;
+    case HIT_TOP5:  g_TopAppsCount = 5;  SaveAlphaSetting(); if(g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH,0,0); InvalidateRect(hWnd,nullptr,FALSE); break;
+    case HIT_TOP10: g_TopAppsCount = 10; SaveAlphaSetting(); if(g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH,0,0); InvalidateRect(hWnd,nullptr,FALSE); break;
 
     case HIT_FONT_MISANS:  g_FontName = L"MiSans";  goto apply_font;
     case HIT_FONT_SIMHEI:  g_FontName = L"SimHei";  goto apply_font;
@@ -743,16 +811,16 @@ static void HandleHit(HWND hWnd, int hitId) {
         SaveAlphaSetting();   // FontName 已随 SaveAlphaSetting 一并写入 INI
         RebuildFont();        // 立即切换 g_MiSansFamily
         // 子控件字体也同步更新
-        if (s_hFont) { DeleteObject(s_hFont); s_hFont = NULL; }
+        if (s_hFont) { DeleteObject(s_hFont); s_hFont = nullptr; }
         EnsureFont();
         ApplyFontToChildren();
-        InvalidateRect(hWnd, NULL, FALSE);
+        InvalidateRect(hWnd, nullptr, FALSE);
         if (g_hWidgetWnd) PostMessage(g_hWidgetWnd, WM_USER_REFRESH, 0, 0);
         break;
     }
 
     case HIT_TAI_BROWSE: {
-        BROWSEINFOW bi = {0};
+        BROWSEINFOW bi = {nullptr};
         bi.hwndOwner = hWnd;
         bi.ulFlags   = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
         bi.lpszTitle = L"选择 Tai 数据库所在文件夹";
@@ -773,7 +841,7 @@ static void HandleHit(HWND hWnd, int hitId) {
             g_TaiDbPath = buf;
         }
         SaveTaiDbPathSetting();
-        InvalidateRect(hWnd, NULL, FALSE);
+        InvalidateRect(hWnd, nullptr, FALSE);
         break;
     }
 
@@ -785,11 +853,11 @@ static void HandleHit(HWND hWnd, int hitId) {
         GetWindowTextW(s_hConfPassEdit, conP, 128);
         if (wcslen(newP) == 0) {
             s_StatusMsg = L"新密码不能为空"; s_StatusOk = false;
-            InvalidateRect(hWnd,NULL,FALSE); break;
+            InvalidateRect(hWnd,nullptr,FALSE); break;
         }
         if (wcscmp(newP, conP) != 0) {
             s_StatusMsg = L"两次输入的新密码不一致"; s_StatusOk = false;
-            InvalidateRect(hWnd,NULL,FALSE); break;
+            InvalidateRect(hWnd,nullptr,FALSE); break;
         }
         std::wstring op(oldP), np(newP);
         std::thread([hWnd, op, np]() {
@@ -803,7 +871,7 @@ static void HandleHit(HWND hWnd, int hitId) {
             s_StatusMsg = ok ? L"密码修改成功" : L"修改失败，请检查当前密码是否正确";
             s_StatusOk  = ok;
             if (ok) { g_SavedPass = np; SaveSettings(g_UserId, g_Username, g_SavedEmail, np, true); }
-            InvalidateRect(hWnd, NULL, FALSE);
+            InvalidateRect(hWnd, nullptr, FALSE);
         }).detach();
         break;
     }
@@ -829,22 +897,22 @@ static void HandleHit(HWND hWnd, int hitId) {
     }
     save_sync: {
         WCHAR iniPath[MAX_PATH];
-        GetModuleFileNameW(NULL, iniPath, MAX_PATH);
+        GetModuleFileNameW(nullptr, iniPath, MAX_PATH);
         PathRemoveFileSpecW(iniPath);
         PathAppendW(iniPath, SETTINGS_FILE.c_str());
         WritePrivateProfileStringW(L"Auth", L"SyncInterval",
             std::to_wstring(g_SyncInterval).c_str(), iniPath);
-        InvalidateRect(hWnd, NULL, FALSE);
+        InvalidateRect(hWnd, nullptr, FALSE);
         break;
     }
     case HIT_SYNC_NOW: {
         s_StatusMsg = L"同步中..."; s_StatusOk = true;
-        InvalidateRect(hWnd, NULL, FALSE);
+        InvalidateRect(hWnd, nullptr, FALSE);
         std::thread([hWnd]() {
             SyncData();
             s_StatusMsg = L"同步完成";
             s_StatusOk  = true;
-            InvalidateRect(hWnd, NULL, FALSE);
+            InvalidateRect(hWnd, nullptr, FALSE);
         }).detach();
         break;
     }
@@ -854,13 +922,13 @@ static void HandleHit(HWND hWnd, int hitId) {
             L"全量拉取将重置本地同步时间戳，从服务器重新下载所有数据。\n是否继续？",
             L"确认全量拉取", MB_YESNO | MB_ICONWARNING) == IDYES) {
             s_StatusMsg = L"正在全量拉取..."; s_StatusOk = true;
-            InvalidateRect(hWnd, NULL, FALSE);
+            InvalidateRect(hWnd, nullptr, FALSE);
             std::thread([hWnd]() {
                 g_LastSyncTime = 0; SaveLastSyncTime(0);
                 SyncData();
                 s_StatusMsg = L"全量拉取完成";
                 s_StatusOk  = true;
-                InvalidateRect(hWnd, NULL, FALSE);
+                InvalidateRect(hWnd, nullptr, FALSE);
             }).detach();
         }
         break;
@@ -892,12 +960,15 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM l
         HDC mdc  = CreateCompatibleDC(hdc);
         HBITMAP mbm = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
         HBITMAP old = (HBITMAP)SelectObject(mdc, mbm);
-        { Graphics g(mdc); DrawSettings(g, rc.right, rc.bottom); }
+        {
+            Graphics g(mdc);
+            DrawSettings(g, rc.right, rc.bottom);
+        }
         BitBlt(hdc, 0, 0, rc.right, rc.bottom, mdc, 0, 0, SRCCOPY);
         SelectObject(mdc, old);
-        DeleteObject(mbm); DeleteDC(mdc);
+        DeleteObject(mbm);
+        DeleteDC(mdc);
         EndPaint(hWnd, &ps);
-        // ⚠️ 不在 WM_PAINT 里调用 ApplyFontToChildren，防止 WM_SETFONT→重绘→WM_PAINT 死循环
         break;
     }
 
@@ -906,7 +977,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM l
         int newHov = -1;
         int navW = S(165);
         for (int i = 0; i < PAGE_COUNT; i++) {
-            float ny = (float)(S(62) + i * S(44));
+            float ny = static_cast<float>(S(62) + i * S(44));
             if (mx >= S(8) && mx <= navW - S(8) &&
                 my >= (int)ny && my <= (int)(ny + S(36))) {
                 newHov = i; break;
@@ -914,7 +985,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM l
         }
         if (newHov != s_HoverNav) {
             s_HoverNav = newHov;
-            InvalidateRect(hWnd, NULL, FALSE);
+            InvalidateRect(hWnd, nullptr, FALSE);
         }
         break;
     }
@@ -951,8 +1022,8 @@ static LRESULT CALLBACK SettingsWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM l
 
     case WM_DESTROY:
         DestroyPageControls();
-        if (s_hFont) { DeleteObject(s_hFont); s_hFont = NULL; }
-        s_hWnd = NULL;
+        if (s_hFont) { DeleteObject(s_hFont); s_hFont = nullptr; }
+        s_hWnd = nullptr;
         break;
 
     default:
@@ -983,8 +1054,8 @@ void ShowSettingsWindow(HWND parent) {
 
         WNDCLASSW wc = {0};
         wc.lpfnWndProc   = SettingsWndProc;
-        wc.hInstance     = GetModuleHandle(NULL);
-        wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
+        wc.hInstance     = GetModuleHandle(nullptr);
+        wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
         wc.hbrBackground = CreateSolidBrush(RGB(245, 247, 250));
         wc.lpszClassName = L"MathQuizSettingsWnd";
         RegisterClassW(&wc);
@@ -1000,12 +1071,8 @@ void ShowSettingsWindow(HWND parent) {
         L"MathQuizSettingsWnd", L"设置 - MathQuizLite",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         x, y, W, H,
-        parent, NULL, GetModuleHandle(NULL), NULL);
+        parent, nullptr, GetModuleHandle(nullptr), nullptr);
 
     ShowWindow(h, SW_SHOW);
     UpdateWindow(h);
 }
-
-
-
-
