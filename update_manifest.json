@@ -1,9 +1,9 @@
 {
-  "version_code": 12,
-  "version_name": "1.8.4",
+  "version_code": 13,
+  "version_name": "1.8.6",
   "force_update": true,
   "update_info": {
-    "title": "版本更新 1.8.4",
+    "title": "版本更新 1.8.6",
     "description": "【新增】跨端感知：新增了跨端感知功能，能够更好地适配不同设备和平台，提供更流畅的使用体验。\n【优化】性能提升：对应用的性能进行了优化，提升了运行效率和响应速度，让用户体验更加顺畅。\n【修复】已知问题修复：修复了一些已知的问题和bug，提升了应用的稳定性和可靠性。",
     "full_package_url": "https://gitee.com/Junpgle/CountdownTodo/releases/download/%E6%9C%80%E6%96%B0release/MathQuizLite.exe"
   }
