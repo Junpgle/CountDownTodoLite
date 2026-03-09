@@ -2,7 +2,7 @@
  * settings_window.cpp
  * 现代化卡片式设置界面
  * 布局：左侧固定导航栏（180px） + 右侧内容区，GDI+ 手绘
- */
+*/
 #include "settings_window.h"
 #include "common.h"
 #include "utils.h"
@@ -10,9 +10,16 @@
 #include <shlobj.h>
 #include <thread>
 #include <string>
+#include "pomodoro_overlay.h"
 
 
 using namespace Gdiplus;
+
+extern BYTE g_OverlayAlpha;
+extern int  g_OverlayX;
+extern int  g_OverlayY;
+extern int  g_OverlayWidth;
+extern int  g_OverlayHeight;
 
 // ============================================================
 // 常量与颜色主题
@@ -89,6 +96,11 @@ static HWND s_hPosXEdit     = nullptr;
 static HWND s_hPosYEdit     = nullptr;
 static HWND s_hWidthEdit    = nullptr;
 static HWND s_hHeightEdit   = nullptr;
+static HWND s_hOverlayAlphaEdit   = nullptr;
+static HWND s_hOverlayXEdit       = nullptr;
+static HWND s_hOverlayYEdit       = nullptr;
+static HWND s_hOverlayWidthEdit   = nullptr;
+static HWND s_hOverlayHeightEdit  = nullptr;
 
 static std::wstring s_StatusMsg;
 static bool         s_StatusOk = true;
@@ -113,6 +125,7 @@ enum HitId {
     HIT_PASSWD_APPLY = 500,
     HIT_LOGOUT       = 501,
     HIT_UPDATE_CHECK = 600,
+    HIT_OVERLAY_APPLY = 700,
 };
 
 // ============================================================
@@ -247,7 +260,9 @@ static void DestroyPageControls() {
         &s_hAlphaEdit, &s_hAlphaSlider,
         &s_hTaiPathEdit, &s_hSyncEdit,
         &s_hOldPassEdit, &s_hNewPassEdit, &s_hConfPassEdit,
-        &s_hPosXEdit, &s_hPosYEdit, &s_hWidthEdit, &s_hHeightEdit
+        &s_hPosXEdit, &s_hPosYEdit, &s_hWidthEdit, &s_hHeightEdit,
+        &s_hOverlayAlphaEdit, &s_hOverlayXEdit, &s_hOverlayYEdit,  // ← 新增
+        &s_hOverlayWidthEdit, &s_hOverlayHeightEdit                 // ← 新增
     };
     for (auto* h : handles) {
         if (*h && IsWindow(*h)) { DestroyWindow(*h); *h = nullptr; }
@@ -398,6 +413,78 @@ static void DrawPageAppearance(Graphics& g, float cx, float cy, float cw, float 
             ShowWindow(s_hHeightEdit, SW_SHOW);
         }
     }
+
+    // 卡片5：悬浮窗设置
+y += S(115) + S(12);
+float overlayCardH = (float)S(175);
+DrawCard(g, x, y, w, overlayCardH, L"番茄钟悬浮窗");
+{
+    float iy5 = y + S(48);
+
+    // 第一行：透明度滑块
+    DrawLabel(g, x + S(16), iy5, L"透明度:");
+    int sliderW2 = (int)(w - S(140));
+    if (!s_hOverlayAlphaEdit) {
+        // 透明度输入框
+        s_hOverlayAlphaEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+            std::to_wstring(g_OverlayAlpha).c_str(),
+            WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+            (int)(x + S(76)), (int)(iy5),
+            S(52), S(26),
+            s_hWnd, (HMENU)3040, GetModuleHandle(nullptr), nullptr);
+        ShowWindow(s_hOverlayAlphaEdit, SW_SHOW);
+    }
+
+    // 第二行：位置
+    float row2Y = iy5 + S(36);
+    DrawLabel(g, x + S(16), row2Y, L"位置 X:");
+    if (!s_hOverlayXEdit) {
+        s_hOverlayXEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+            std::to_wstring(g_OverlayX).c_str(),
+            WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+            (int)(x + S(76)), (int)(row2Y),
+            S(52), S(26),
+            s_hWnd, (HMENU)3041, GetModuleHandle(nullptr), nullptr);
+        ShowWindow(s_hOverlayXEdit, SW_SHOW);
+    }
+    DrawLabel(g, x + S(148), row2Y, L"Y:");
+    if (!s_hOverlayYEdit) {
+        s_hOverlayYEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+            std::to_wstring(g_OverlayY).c_str(),
+            WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+            (int)(x + S(168)), (int)(row2Y),
+            S(52), S(26),
+            s_hWnd, (HMENU)3042, GetModuleHandle(nullptr), nullptr);
+        ShowWindow(s_hOverlayYEdit, SW_SHOW);
+    }
+
+    // 第三行：尺寸
+    float row3Y = iy5 + S(72);
+    DrawLabel(g, x + S(16), row3Y, L"宽度:");
+    if (!s_hOverlayWidthEdit) {
+        s_hOverlayWidthEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+            std::to_wstring(g_OverlayWidth).c_str(),
+            WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+            (int)(x + S(76)), (int)(row3Y),
+            S(52), S(26),
+            s_hWnd, (HMENU)3043, GetModuleHandle(nullptr), nullptr);
+        ShowWindow(s_hOverlayWidthEdit, SW_SHOW);
+    }
+    DrawLabel(g, x + S(148), row3Y, L"高度:");
+    if (!s_hOverlayHeightEdit) {
+        s_hOverlayHeightEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT",
+            std::to_wstring(g_OverlayHeight).c_str(),
+            WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_CENTER,
+            (int)(x + S(188)), (int)(row3Y),
+            S(52), S(26),
+            s_hWnd, (HMENU)3044, GetModuleHandle(nullptr), nullptr);
+        ShowWindow(s_hOverlayHeightEdit, SW_SHOW);
+    }
+
+    // 应用按钮
+    DrawButton(g, x + S(16), iy5 + S(108), w - S(32), (REAL)S(34),
+               L"应用悬浮窗设置", HIT_OVERLAY_APPLY);
+}
 }
 
 // --- 数据源页 ---
@@ -786,6 +873,38 @@ static void HandleHit(HWND hWnd, int hitId) {
     }
 
     switch (hitId) {
+
+    case HIT_OVERLAY_APPLY: {
+        if (s_hOverlayAlphaEdit) {
+            WCHAR buf[16]; GetWindowTextW(s_hOverlayAlphaEdit, buf, 16);
+            int v = _wtoi(buf);
+            if (v >= 30 && v <= 255) g_OverlayAlpha = (BYTE)v;
+        }
+        if (s_hOverlayXEdit) {
+            WCHAR buf[16]; GetWindowTextW(s_hOverlayXEdit, buf, 16);
+            g_OverlayX = _wtoi(buf);
+        }
+        if (s_hOverlayYEdit) {
+            WCHAR buf[16]; GetWindowTextW(s_hOverlayYEdit, buf, 16);
+            g_OverlayY = _wtoi(buf);
+        }
+        if (s_hOverlayWidthEdit) {
+            WCHAR buf[16]; GetWindowTextW(s_hOverlayWidthEdit, buf, 16);
+            int v = _wtoi(buf);
+            if (v >= 80) g_OverlayWidth = v;
+        }
+        if (s_hOverlayHeightEdit) {
+            WCHAR buf[16]; GetWindowTextW(s_hOverlayHeightEdit, buf, 16);
+            int v = _wtoi(buf);
+            if (v >= 50) g_OverlayHeight = v;
+        }
+        SaveOverlaySettings();
+        // 通知悬浮窗立即刷新
+        extern void ShowPomodoroOverlay();
+        PostMessage(FindWindowW(L"PomodoroOverlay", nullptr), WM_USER_REFRESH, 0, 0);
+        InvalidateRect(hWnd, nullptr, FALSE);
+        break;
+    }
 
     case HIT_ALPHA_APPLY: {
         if (s_hAlphaSlider) {

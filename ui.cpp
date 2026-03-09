@@ -12,6 +12,7 @@
 #include <ctime>
 #include <thread>
 #include <shlwapi.h>
+#include "pomodoro_overlay.h"
 
 #pragma comment(lib, "shlwapi.lib")
 
@@ -756,6 +757,7 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             AppendMenuW(hMenu, MF_STRING, 2001, L"⚙  设置");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
             AppendMenuW(hMenu, MF_STRING, 2006, L"🍅  番茄钟");
+            AppendMenuW(hMenu, MF_STRING, 2007, L"🪟  番茄钟悬浮窗");
             AppendMenuW(hMenu, MF_STRING, 2002, L"📊  屏幕时间统计");
             AppendMenuW(hMenu, MF_STRING, 2003, L"⚡  立即同步");
             AppendMenuW(hMenu, MF_STRING, 2004, L"🔍  检查更新");
@@ -771,6 +773,16 @@ LRESULT CALLBACK WidgetWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp) {
             else if (cmd == 2003) std::thread([]() { SyncData(); }).detach();
             else if (cmd == 2004) CheckForUpdates(true);
             else if (cmd == 2005) PostQuitMessage(0);
+            else if (cmd == 2007) {
+                extern void ShowPomodoroOverlay();
+                extern void HidePomodoroOverlay();
+                // 切换显示/隐藏
+                HWND hOverlay = FindWindowW(L"PomodoroOverlay", nullptr);
+                if (hOverlay && IsWindowVisible(hOverlay))
+                    HidePomodoroOverlay();
+                else
+                    ShowPomodoroOverlay();
+            }
         } break;
 
         // 来自设置窗口的退出登录请求（id=9001）

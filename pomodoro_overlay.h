@@ -40,6 +40,8 @@ extern BYTE g_OverlayAlpha;
 // 悬浮窗位置（持久化）
 extern int  g_OverlayX;
 extern int  g_OverlayY;
+extern int  g_OverlayWidth;
+extern int  g_OverlayHeight;
 
 // 保存/加载悬浮窗位置和透明度
 void SaveOverlaySettings();
