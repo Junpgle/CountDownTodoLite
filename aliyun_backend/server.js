@@ -70,26 +70,44 @@ wss.on('connection', (ws, req) => {
       const payload = { sourceDevice: deviceId, timestamp: Date.now(), ...data };
 
       // 6. 更新“黑板”记忆
-      if (data.action === 'START') {
+      // 兼容普通的 START 和重连后主动上报的 RECONNECT_SYNC
+      if (data.action === 'START' || data.action === 'RECONNECT_SYNC') {
+
+        // 【核心修改】：检查云端是否已经有专注状态
+        if (room.focusState !== null) {
+          // 如果当前云端的专注状态是【其他设备】发起的，触发“如有则不管”逻辑
+          if (room.focusState.sourceDevice !== deviceId) {
+            console.log(`${getTime()} [冲突拦截] 云端已有 ${room.focusState.sourceDevice} 的记录，忽略 ${deviceId} 的离线上报。`);
+
+            // 💡 强烈建议：把云端的真实状态反推给这个刚连上的设备，强制纠正它的本地 UI
+            ws.send(JSON.stringify({
+              action: 'SYNC_FOCUS',
+              ...room.focusState
+            }));
+            return; // 直接 return，不覆盖云端状态，也不向其他人广播
+          }
+          // 如果是【同一台设备】重连后补发的，允许放行（相当于刷新了一次状态）
+        }
+
+        // 云端为空，或者同设备重连补发，正常写入云端
         room.focusState = payload;
-        // 🏷️ 专注开始时，如果携带了标签数组，更新房间记忆
+        // 🏷️ 更新标签
         if (Array.isArray(data.tags)) {
           room.currentTags = data.tags;
         }
         const tagsLog = room.currentTags.length > 0 ? ` (标签: ${room.currentTags.join(', ')})` : '';
-        console.log(`${getTime()} [记录] 设备 ${deviceId} 发起了专注${tagsLog}。`);
+        console.log(`${getTime()} [记录] 设备 ${deviceId} 同步了专注状态${tagsLog}。`);
 
       } else if (data.action === 'STOP' || data.action === 'INTERRUPT') {
         room.focusState = null;
         console.log(`${getTime()} [擦除] 设备 ${deviceId} 结束/中断了专注。`);
 
       } else if (data.action === 'UPDATE_TAGS') {
-        // 🏷️ 专门处理多标签更新：确保存入的是数组，如果传空或格式错误则置为空数组
         room.currentTags = Array.isArray(data.tags) ? data.tags : [];
         console.log(`${getTime()} [记录] 设备 ${deviceId} 将标签更新为: [${room.currentTags.join(', ')}]`);
       }
 
-      // 7. 广播给其他人
+      // 7. 广播给其他人 (除了触发冲突被 return 掉的，其他都会正常广播)
       for (const client of room.clients.values()) {
         if (client !== ws && client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify(payload));

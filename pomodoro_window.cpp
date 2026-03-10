@@ -153,6 +153,76 @@ static void FinishCurrentRecord(const std::wstring& statusStr) {
     }).detach();
     s.currentRecordUuid.clear();
 }
+
+// ============================================================
+// 🚀 WebSocket 连上时的回调 (由 ws_pomodoro.cpp 自动调用)
+// ============================================================
+void NotifyWsReconnected() {
+    auto& s = g_PomodoroSession;
+    // 判断本地是否正在专注/休息
+    if (s.status != PomodoroStatus::Idle) {
+        LogMessage(L"[番茄钟UI] WS 恢复连接，主动上报本地专注状态...");
+
+        std::wstring todoContent;
+        std::vector<std::wstring> tagNames;
+        {
+            std::lock_guard<std::recursive_mutex> lk(g_DataMutex);
+            // 查找绑定的待办内容
+            if (!s.boundTodoUuid.empty()) {
+                for (const auto& t : g_Todos) {
+                    if (t.uuid == s.boundTodoUuid) { todoContent = t.content; break; }
+                }
+            }
+            // 获取当前选中的标签名数组 (调用本文件上方的辅助函数)
+            tagNames = GetSelTagNames();
+        }
+
+        // 确定当前阶段的计划时长
+        int plannedSecs = s.isRestPhase ? s.restDuration : s.focusDuration;
+
+        // 调用底层接口发送同步包
+        WsPomodoroSendReconnectSync(
+            s.targetEndMs,
+            plannedSecs,
+            todoContent,
+            s.boundTodoUuid,
+            s.isRestPhase,
+            tagNames
+        );
+    }
+}
+
+// ============================================================
+// 🚀 被云端抓到冲突时的回调 (由 ws_pomodoro.cpp 收到 SYNC_FOCUS 时调用)
+// ============================================================
+void NotifyLocalPomodoroConflict() {
+    auto& s = g_PomodoroSession;
+    if (s.status != PomodoroStatus::Idle) {
+        LogMessage(L"[番茄钟UI] ⚠️ 发生跨端冲突，杀掉本地定时器！");
+
+        // 1. 将本次错误的离线专注标记为中断（或者你也可以直接不调用这句，当做没发生过）
+        FinishCurrentRecord(L"interrupted");
+
+        // 2. 清空本地状态
+        s.status      = PomodoroStatus::Idle;
+        s.isRestPhase = false;
+        s.targetEndMs = 0;
+        s.currentLoop = 0;
+        s.currentRecordUuid.clear();
+
+        // 3. 保存配置并重绘 UI
+        SavePomodoroSession();
+
+        if (s_hWnd && IsWindow(s_hWnd)) {
+            // 触发重绘，倒计时圆环会变成“准备开始”状态
+            InvalidateRect(s_hWnd, NULL, FALSE);
+        }
+
+        // 接下来底层 ws_pomodoro 会继续派发 RemoteFocus 事件，
+        // 你的界面上马上就会弹出“其他设备正在专注”的横幅。
+    }
+}
+
 // ============================================================
 // 核心绘制
 // ============================================================

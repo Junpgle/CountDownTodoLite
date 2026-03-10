@@ -30,3 +30,10 @@ void WsPomodoroSendUpdateTags(const std::vector<std::wstring>& tagNames);
 
 // 发送 STOP / INTERRUPT 消息（本机停止或中断时调用）
 void WsPomodoroSendStop();
+
+void WsPomodoroSendReconnectSync(long long targetEndMs,
+                                 int plannedSecs,
+                                 const std::wstring& todoContent,
+                                 const std::wstring& todoUuid,
+                                 bool isRest,
+                                 const std::vector<std::wstring>& tagNames);

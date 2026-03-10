@@ -188,7 +188,14 @@ static void RecvLoop() {
         std::wstring srcDevW = ToWide(srcDev);
         if (srcDevW == g_DeviceId) continue;
 
-        if (action == "START" || action == "SYNC" || action == "SYNC_FOCUS") {
+        if (action == "START" || action == "SYNC" || action == "SYNC_FOCUS" || action == "RECONNECT_SYNC") {
+            // 🚀 新增：处理冲突纠正指令
+            if (action == "SYNC_FOCUS") {
+                LogMessage(L"[WS番茄钟] ⚠️ 收到云端纠正指令！准备覆盖本地状态");
+                // 呼叫外部 UI 层：立刻杀掉本地正在运行的专注定时器！
+                extern void NotifyLocalPomodoroConflict();
+                NotifyLocalPomodoroConflict();
+            }
             // 🚀 兼容 Flutter 端字段名（targetEndMs / target_end_ms / endTime）
             long long targetEndMs = ExtractJsonLL(msg, "targetEndMs");
             if (targetEndMs == 0) targetEndMs = ExtractJsonLL(msg, "target_end_ms");
@@ -232,10 +239,27 @@ static void RecvLoop() {
             bool isRest = ExtractJsonBool(msg, "isRest");
             if (!isRest) isRest = ExtractJsonBool(msg, "is_rest");
 
-            // tags 数组 —— 服务器转发的是明文名字字符串数组，直接用
+            // 🚀 智能兼容：不管对方发的是明文名字，还是误发的 UUID，统统处理
             auto tagNamesRaw = ExtractJsonStrArray(msg, "tags");
             std::vector<std::wstring> tagNamesW;
-            for (const auto& tn : tagNamesRaw) tagNamesW.push_back(ToWide(tn));
+            for (const auto& tn : tagNamesRaw) {
+                std::wstring wtn = ToWide(tn);
+                // 简单判断是不是 UUID 格式 (长度 36 且包含 '-')
+                if (wtn.length() == 36 && wtn.length() > 8 && wtn[8] == L'-') {
+                    bool found = false;
+                    std::lock_guard<std::recursive_mutex> lk_tag(g_DataMutex);
+                    for (const auto& tag : g_PomodoroTags) {
+                        if (tag.uuid == wtn) {
+                            tagNamesW.push_back(tag.name); // 翻译成真实名字
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) tagNamesW.push_back(L"未知标签");
+                } else {
+                    tagNamesW.push_back(wtn); // 本来就是明文，直接存
+                }
+            }
 
             // 推算 targetEndMs
             long long nowMs = (long long)time(nullptr) * 1000LL;
@@ -484,6 +508,13 @@ void WsPomodoroConnect() {
                 // 请求句柄用完
                 WinHttpCloseHandle(s_hRequest); s_hRequest = NULL;
 
+                // 🚀 新增：通知上层 UI 连接已恢复，可以上报本地离线专注了
+                extern void NotifyWsReconnected();
+                std::thread([]() {
+                    Sleep(500); // 稍微延迟，等主线程反应过来
+                    NotifyWsReconnected();
+                }).detach();
+
                 s_Connected = true;
                 LogMessage(L"[WS番茄钟] ✅ 连接成功 userId=" + std::to_wstring(g_UserId));
 
@@ -602,3 +633,34 @@ void WsPomodoroSendStop() {
     LogMessage(L"[WS番茄钟] 已发送 STOP");
 }
 
+// ---------------------------------------------------------
+// 🚀 新增：发送断线重连同步信号 (RECONNECT_SYNC)
+// ---------------------------------------------------------
+void WsPomodoroSendReconnectSync(long long targetEndMs, int plannedSecs,
+                                 const std::wstring& todoContent,
+                                 const std::wstring& todoUuid,
+                                 bool isRest,
+                                 const std::vector<std::wstring>& tagNames)
+{
+    if (!s_Connected) return;
+    long long nowMs = (long long)time(nullptr) * 1000LL;
+    std::string content  = JsonEscape(ToUtf8(todoContent));
+    std::string uuid     = JsonEscape(ToUtf8(todoUuid));
+    std::string tagsJson = BuildTagsArray(tagNames);
+
+    std::ostringstream ss;
+    ss << "{"
+       << "\"action\":\"RECONNECT_SYNC\"," // 专属 Action
+       << "\"targetEndMs\":" << targetEndMs  << ","
+       << "\"plannedSecs\":" << plannedSecs   << ","
+       << "\"todoContent\":\"" << content    << "\","
+       << "\"todo_title\":\""  << content    << "\","
+       << "\"todo_uuid\":\""   << uuid       << "\","
+       << "\"isRest\":"    << (isRest ? "true" : "false") << ","
+       << "\"tags\":"      << tagsJson        << ","
+       << "\"timestamp\":" << nowMs
+       << "}";
+
+    WsSend(ss.str());
+    LogMessage(L"[WS番茄钟] 📤 已发送离线状态同步 RECONNECT_SYNC");
+}
