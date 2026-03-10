@@ -12,6 +12,10 @@
 
 using namespace Gdiplus;
 
+extern long long g_SemesterStartMs;
+extern void ApiFetchSettings();
+extern void LoadSettingsFromLocal();
+
 // 声明外部 API 函数
 extern void ApiFetchCourses();
 extern void SyncData();
@@ -23,6 +27,27 @@ static int s_CurrentWeekIndex = 1;
 static int s_CurrentWeekOffset = 0;
 static int s_ViewMode = 0; // 0: 混合查看, 1: 只看课表, 2: 只看待办
 static bool s_LocalCoursesLoaded = false;
+
+// 新增辅助函数：根据开学时间计算当前物理周次
+static int CalculateRealWeekIndex() {
+    if (g_SemesterStartMs <= 0) return 1; // 未设置开学时间，默认第 1 周
+
+    time_t now = time(nullptr);
+    tm nowTm; localtime_s(&nowTm, &now);
+    nowTm.tm_hour = 0; nowTm.tm_min = 0; nowTm.tm_sec = 0;
+    time_t todayStart = mktime(&nowTm);
+
+    time_t startT = (time_t)(g_SemesterStartMs / 1000LL);
+    tm startTm; localtime_s(&startTm, &startT);
+    startTm.tm_hour = 0; startTm.tm_min = 0; startTm.tm_sec = 0;
+    time_t semesterStart = mktime(&startTm);
+
+    double diffSecs = difftime(todayStart, semesterStart);
+    if (diffSecs < 0) return 1; // 还没到开学时间，算作第 1 周
+
+    int diffDays = (int)(diffSecs / 86400);
+    return (diffDays / 7) + 1;
+}
 
 // 交互区域记录
 struct HitZoneControl {
@@ -516,6 +541,11 @@ static LRESULT CALLBACK WeeklyWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
             RenderWeeklyView(hWnd);
             break;
         case WM_USER_WEEKLY_REFRESH:
+            // 如果 wParam 有值，说明是同步线程传回了最新的真实周次
+            if (wp > 0) {
+                s_CurrentWeekIndex = (int)wp;
+                s_CurrentWeekOffset = 0; // 重置偏移，回到"本周"
+            }
             InvalidateRect(hWnd, NULL, FALSE);
             break;
         case WM_LBUTTONDOWN: {
@@ -620,9 +650,15 @@ static LRESULT CALLBACK WeeklyWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
                     }
                     else if (z.id == 1) {
                         std::thread([hWnd]() {
+                            ApiFetchSettings(); // 🚀 先拉取最新的学期设置
                             ApiFetchCourses();
                             SyncData();
-                            PostMessage(hWnd, WM_USER_WEEKLY_REFRESH, 0, 0);
+
+                            // 🚀 拉取后重新计算一下周次，防止跨周或刚设置完开学时间
+                            int realWeek = CalculateRealWeekIndex();
+
+                            // 这里使用 PostMessage 把结果传回主线程更新 UI
+                            PostMessage(hWnd, WM_USER_WEEKLY_REFRESH, realWeek, 0);
                         }).detach();
                     }
                     else if (z.id == 2) {
@@ -665,8 +701,15 @@ static LRESULT CALLBACK WeeklyWndProc(HWND hWnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 void ShowWeeklyViewWindow(HWND parent) {
+
     if (!s_LocalCoursesLoaded) {
         LoadLocalCourses();
+        LoadSettingsFromLocal(); // 🚀 加载本地缓存的开学时间
+
+        // 🚀 初始化时直接计算真实的当前周
+        s_CurrentWeekIndex = CalculateRealWeekIndex();
+        s_CurrentWeekOffset = 0;
+
         s_LocalCoursesLoaded = true;
     }
 

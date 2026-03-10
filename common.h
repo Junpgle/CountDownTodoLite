@@ -34,6 +34,13 @@
 #define WM_USER_REFRESH (WM_USER + 1)
 #define WM_USER_TICK    (WM_USER + 2)
 
+extern long long g_SemesterStartMs;
+extern long long g_SemesterEndMs;
+
+void ApiFetchSettings();
+void LoadSettingsFromLocal();
+void SaveSettingsToLocal();
+
 // 常量声明 (仅声明，定义在 common.cpp)
 extern const std::wstring API_HOST;
 extern const std::wstring WS_HOST;   // 阿里云 WebSocket 服务器 IP

@@ -12,6 +12,65 @@
 #pragma comment(lib, "shlwapi.lib")
 
 using json = nlohmann::json;
+// 在 api.cpp 顶部定义变量
+long long g_SemesterStartMs = 0;
+long long g_SemesterEndMs = 0;
+
+// ---------------------------------------------------------
+// 新增：本地缓存读写 (复用 SETTINGS_FILE)
+// ---------------------------------------------------------
+void SaveSettingsToLocal() {
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+
+    WritePrivateProfileStringW(L"Settings", L"SemesterStart", std::to_wstring(g_SemesterStartMs).c_str(), path);
+    WritePrivateProfileStringW(L"Settings", L"SemesterEnd",   std::to_wstring(g_SemesterEndMs).c_str(), path);
+}
+
+void LoadSettingsFromLocal() {
+    WCHAR path[MAX_PATH];
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    PathRemoveFileSpecW(path);
+    PathAppendW(path, SETTINGS_FILE.c_str());
+
+    WCHAR buf[256] = {0};
+    GetPrivateProfileStringW(L"Settings", L"SemesterStart", L"0", buf, 256, path);
+    g_SemesterStartMs = std::stoll(buf);
+
+    GetPrivateProfileStringW(L"Settings", L"SemesterEnd", L"0", buf, 256, path);
+    g_SemesterEndMs = std::stoll(buf);
+}
+
+// ---------------------------------------------------------
+// 新增：拉取用户设置 (对接后端 GET /api/settings)
+// ---------------------------------------------------------
+void ApiFetchSettings() {
+    if (g_UserId <= 0 || g_AuthToken.empty()) return;
+
+    std::string res = SendRequest(L"/api/settings", "GET", "");
+    if (res.empty() || res.find("ERROR") == 0) {
+        LogMessage(L"拉取用户设置失败: 网络异常");
+        return;
+    }
+
+    try {
+        auto resp = json::parse(res);
+        if (resp.contains("success") && resp["success"].get<bool>()) {
+            if (resp.contains("semester_start") && !resp["semester_start"].is_null()) {
+                g_SemesterStartMs = resp["semester_start"].get<long long>();
+            }
+            if (resp.contains("semester_end") && !resp["semester_end"].is_null()) {
+                g_SemesterEndMs = resp["semester_end"].get<long long>();
+            }
+            SaveSettingsToLocal(); // 更新本地缓存
+            LogMessage(L"学期时间同步成功!");
+        }
+    } catch (...) {
+        LogMessage(L"解析用户设置 JSON 失败");
+    }
+}
 
 /**
  * 内部辅助：统一日志输出
