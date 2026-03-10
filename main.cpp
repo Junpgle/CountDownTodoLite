@@ -19,7 +19,7 @@ using json = nlohmann::json;
 
 
 // 当前内部版本号（每次发布新版本时递增，必须与服务器端 manifest 中的 version_code 对应）
-const int CURRENT_VERSION_CODE = 13;
+const int CURRENT_VERSION_CODE = 14;
 
 // =========================================================
 // 🚀 字体初始化：依据 g_FontName 加载字体
